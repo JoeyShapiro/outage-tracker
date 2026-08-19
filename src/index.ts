@@ -133,9 +133,58 @@ async function syncOutages(db: D1Database, records: RawOutage[]): Promise<void> 
   await runInBatches(db, [...newOutageStmts, ...closeStmts, ...insertStateStmts, ...resolveStmts]);
 }
 
+interface CityTotal {
+  city: string;
+  outage_count: number;
+  total_affected: number;
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
+}
+
+function renderCityList(rows: CityTotal[]): string {
+  const items = rows
+    .map(
+      (r) =>
+        `<tr><td>${escapeHtml(r.city)}</td><td>${r.outage_count}</td><td>${r.total_affected}</td></tr>`
+    )
+    .join("\n");
+
+  return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Current outages</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem; }
+  table { border-collapse: collapse; width: 100%; max-width: 480px; }
+  th, td { text-align: left; padding: 0.4rem 0.8rem; border-bottom: 1px solid #ddd; }
+  th { font-weight: 600; }
+</style>
+</head>
+<body>
+<h1>Current outages by city</h1>
+<table>
+<thead><tr><th>City</th><th>Outages</th><th>Affected</th></tr></thead>
+<tbody>${items}</tbody>
+</table>
+</body>
+</html>`;
+}
+
 export default {
   async fetch(request, env, ctx): Promise<Response> {
-    return new Response("outage-tracker: viewer worker is up\n");
+    const { results } = await env.DB.prepare(
+      `SELECT o.city AS city, COUNT(*) AS outage_count, SUM(os.affected) AS total_affected
+       FROM outage_states os
+       JOIN outages o ON o.outage_id = os.outage_id
+       WHERE os.valid_to IS NULL
+       GROUP BY o.city
+       ORDER BY total_affected DESC`
+    ).all<CityTotal>();
+
+    return new Response(renderCityList(results), { headers: { "content-type": "text/html; charset=utf-8" } });
   },
 
   async scheduled(event, env, ctx): Promise<void> {
