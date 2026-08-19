@@ -1,0 +1,18 @@
+{
+  "name": "outage-tracker",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "d1:create": "wrangler d1 create outage-tracker",
+    "d1:migrate:local": "wrangler d1 migrations apply outage-tracker --local",
+    "d1:migrate:remote": "wrangler d1 migrations apply outage-tracker --remote",
+    "typegen": "wrangler types",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "wrangler": "^4.100.0"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "outage-tracker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-19",
+  "observability": {
+    "enabled": true
+  },
+
+  // Runs poll() on a schedule; fetch() serves the viewer.
+  "triggers": {
+    "crons": ["0 * * * *"]
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "outage-tracker",
+      // Replace after running `npm run d1:create` and pasting the generated id.
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "migrations_dir": "migrations"
+    }
+  ]
+}
