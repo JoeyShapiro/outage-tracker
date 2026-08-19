@@ -28,6 +28,10 @@ def main(path, target_lat, target_lng, top_n):
     lat = np.array([o["lat"] for o in outages])
     lng = np.array([o["lng"] for o in outages])
 
+    total_affected = sum(o["affected"] for o in outages)
+    print(f"Total outages: {len(outages)}")
+    print(f"Total affected: {total_affected}\n")
+
     dist = haversine(target_lat, target_lng, lat, lng)
     order = np.argsort(dist)[:top_n]
 
