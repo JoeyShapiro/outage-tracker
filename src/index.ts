@@ -136,6 +136,7 @@ interface NearestOutage {
   lng: number;
   city: string;
   zip: string;
+  status: string;
 }
 
 interface TimelineRow {
@@ -384,8 +385,23 @@ function renderSearchForm(address: string): string {
 }
 
 const NEAREST_MARKER_COLOR = "#f97316";
+const NEARBY_MARKER_COLOR = "#f97a1e";
+// Matches the "Assigned" / "Onsite" columns in STATUS_COLUMNS above -- a crew
+// has been dispatched, as opposed to merely reported or still being assessed.
+const CREW_DISPATCHED_TEST = /assign|on-?site/i;
 
-function renderMap(lat: number, lng: number, nearestLat: number, nearestLng: number): string {
+function renderMap(
+  lat: number,
+  lng: number,
+  nearestLat: number,
+  nearestLng: number,
+  nearestStatus: string,
+  nearby: { lat: number; lng: number; status: string }[]
+): string {
+  const nearbyPoints = JSON.stringify(
+    nearby.map((o) => [o.lat, o.lng, CREW_DISPATCHED_TEST.test(o.status)])
+  );
+
   return `<div class="map-wrap"><div id="outage-map"></div></div>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -393,6 +409,8 @@ function renderMap(lat: number, lng: number, nearestLat: number, nearestLng: num
 (function () {
   const entered = [${lat}, ${lng}];
   const nearest = [${nearestLat}, ${nearestLng}];
+  const nearestHasCrew = ${CREW_DISPATCHED_TEST.test(nearestStatus)};
+  const nearby = ${nearbyPoints};
 
   const map = L.map("outage-map", { zoomControl: false, attributionControl: false });
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -401,16 +419,44 @@ function renderMap(lat: number, lng: number, nearestLat: number, nearestLng: num
   }).addTo(map);
   L.control.attribution({ prefix: false }).addTo(map);
 
-  L.marker(entered).addTo(map).bindPopup("Your location");
-  L.circleMarker(nearest, {
-    radius: 8,
-    color: "${NEAREST_MARKER_COLOR}",
-    fillColor: "${NEAREST_MARKER_COLOR}",
-    fillOpacity: 1,
-    weight: 2,
-  }).addTo(map).bindPopup("Nearest outage");
+  function truckIcon(color, size) {
+    return L.divIcon({
+      html: '<div style="width:' + size + 'px;height:' + size + 'px;border-radius:50%;background:' + color + ';display:flex;align-items:center;justify-content:center;font-size:' + Math.round(size * 0.65) + 'px;line-height:1;">🚚</div>',
+      className: "",
+      iconSize: [size, size],
+      iconAnchor: [size / 2, size / 2],
+    });
+  }
 
-  const bounds = L.latLngBounds([entered, nearest]).pad(0.5);
+  nearby.forEach(function (pt) {
+    const point = [pt[0], pt[1]];
+    if (pt[2]) {
+      L.marker(point, { icon: truckIcon("${NEARBY_MARKER_COLOR}", 18) }).addTo(map);
+    } else {
+      L.circleMarker(point, {
+        radius: 5,
+        color: "${NEARBY_MARKER_COLOR}",
+        fillColor: "${NEARBY_MARKER_COLOR}",
+        fillOpacity: 0.9,
+        weight: 1,
+      }).addTo(map);
+    }
+  });
+
+  L.marker(entered).addTo(map).bindPopup("Your location");
+  if (nearestHasCrew) {
+    L.marker(nearest, { icon: truckIcon("${NEAREST_MARKER_COLOR}", 26) }).addTo(map).bindPopup("Nearest outage");
+  } else {
+    L.circleMarker(nearest, {
+      radius: 8,
+      color: "${NEAREST_MARKER_COLOR}",
+      fillColor: "${NEAREST_MARKER_COLOR}",
+      fillOpacity: 1,
+      weight: 2,
+    }).addTo(map).bindPopup("Nearest outage");
+  }
+
+  const bounds = L.latLngBounds([entered, nearest].concat(nearby.map(function (pt) { return [pt[0], pt[1]]; }))).pad(0.5);
   map.fitBounds(bounds, { maxZoom: 15 });
 })();
 </script>`;
@@ -422,6 +468,7 @@ function renderTimelinePanel(
   lat: number,
   lng: number,
   nearest: NearestOutage | null,
+  nearby: NearestOutage[],
   distanceMiles: number | null,
   timeline: TimelineRow[]
 ): string {
@@ -455,7 +502,7 @@ function renderTimelinePanel(
 <tbody>${rows}</tbody>
 </table>
 </div>
-${renderMap(lat, lng, nearest.lat, nearest.lng)}`;
+${renderMap(lat, lng, nearest.lat, nearest.lng, nearest.status, nearby)}`;
   }
 
   return `<section class="card">
@@ -647,20 +694,25 @@ async function handleHome(env: Env, url: URL): Promise<Response> {
   const searchError = searched && (latParam === "" || lngParam === "" || !Number.isFinite(lat) || !Number.isFinite(lng));
 
   let nearest: NearestOutage | null = null;
+  let nearby: NearestOutage[] = [];
   let timeline: TimelineRow[] = [];
   let distanceMiles: number | null = null;
 
   if (searched && !searchError) {
     // Nearest-neighbor by plain squared distance in degree space -- fine at the
     // scale of a single utility's service territory, no need for haversine here.
-    nearest = await env.DB.prepare(
-      `SELECT outage_id, lat, lng, city, zip
-       FROM outages
-       ORDER BY (lat - ?) * (lat - ?) + (lng - ?) * (lng - ?) ASC
-       LIMIT 1`
+    const nearestTen = await env.DB.prepare(
+      `SELECT o.outage_id AS outage_id, o.lat AS lat, o.lng AS lng, o.city AS city, o.zip AS zip,
+              COALESCE(os.status, '') AS status
+       FROM outages o
+       LEFT JOIN outage_states os ON os.outage_id = o.outage_id AND os.valid_to IS NULL
+       ORDER BY (o.lat - ?) * (o.lat - ?) + (o.lng - ?) * (o.lng - ?) ASC
+       LIMIT 10`
     )
       .bind(lat, lat, lng, lng)
-      .first<NearestOutage>();
+      .all<NearestOutage>();
+    nearest = nearestTen.results[0] ?? null;
+    nearby = nearestTen.results.slice(1);
 
     if (nearest) {
       distanceMiles = haversineMiles(lat, lng, nearest.lat, nearest.lng);
@@ -708,7 +760,7 @@ async function handleHome(env: Env, url: URL): Promise<Response> {
   </div>
 </header>
 <main class="layout">
-${renderTimelinePanel(addressParam, searchError, lat, lng, nearest, distanceMiles, timeline)}
+${renderTimelinePanel(addressParam, searchError, lat, lng, nearest, nearby, distanceMiles, timeline)}
 <div class="stack">
 ${renderCityPanel(currentSnapshot, baselineSnapshot)}
 ${renderAffectedChartCard(affectedSnapshots)}
