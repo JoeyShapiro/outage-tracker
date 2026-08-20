@@ -236,16 +236,20 @@ const PAGE_STYLE = `
     flex: 1;
     min-height: 0;
     display: grid;
-    grid-template-columns: minmax(320px, 1fr) minmax(340px, 1.1fr);
-    grid-template-rows: 2fr 3fr;
+    grid-template-columns: minmax(320px, 1fr) minmax(360px, 1.2fr);
     gap: 1rem;
     padding: 0.75rem 1.5rem 1.5rem;
   }
-  .full-span { grid-column: 1 / -1; }
-  .city-content { display: flex; gap: 1.25rem; flex: 1; min-height: 0; }
-  .city-content .chart-wrap { flex: 1 1 45%; min-height: 0; position: relative; }
-  .city-content .chart-wrap canvas { width: 100% !important; height: 100% !important; }
-  .city-content .card-scroll { flex: 1 1 55%; }
+  .stack {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    min-height: 0;
+  }
+  .stack .card:first-child { flex: 1 1 auto; }
+  .stack .card:last-child { flex: 0 0 42%; }
+  .chart-wrap { flex: 1; min-height: 0; position: relative; }
+  .chart-wrap canvas { width: 100% !important; height: 100% !important; }
   .card {
     min-height: 0;
     display: flex;
@@ -374,45 +378,6 @@ interface CityStatusCount {
   count: number;
 }
 
-function renderCrewPanel(rows: CityStatusCount[]): string {
-  const onSite = rows.filter((r) => /on-site/i.test(r.status)).reduce((sum, r) => sum + r.count, 0);
-
-  const statusTotals = new Map<string, number>();
-  for (const r of rows) statusTotals.set(r.status, (statusTotals.get(r.status) ?? 0) + r.count);
-  const statuses = [...statusTotals.keys()].sort((a, b) => statusTotals.get(b)! - statusTotals.get(a)!);
-
-  const cityMap = new Map<string, Map<string, number>>();
-  for (const r of rows) {
-    if (!cityMap.has(r.city)) cityMap.set(r.city, new Map());
-    cityMap.get(r.city)!.set(r.status, r.count);
-  }
-  const cities = [...cityMap.keys()].sort();
-
-  const header = `<th>City</th>${statuses.map((s) => `<th>${escapeHtml(s || "Unknown")}</th>`).join("")}`;
-  const bodyRows = cities
-    .map((city) => {
-      const counts = cityMap.get(city)!;
-      const cells = statuses.map((s) => `<td>${counts.get(s) ?? "–"}</td>`).join("");
-      return `<tr><td>${escapeHtml(city)}</td>${cells}</tr>`;
-    })
-    .join("\n");
-
-  const table =
-    rows.length === 0
-      ? `<p class="muted">No active outages.</p>`
-      : `<div class="card-scroll">
-<table>
-<thead><tr>${header}</tr></thead>
-<tbody>${bodyRows}</tbody>
-</table>
-</div>`;
-
-  return `<section class="card">
-<h2>Crew status (${onSite} on-site)</h2>
-${table}
-</section>`;
-}
-
 function renderAffectedChart(points: AffectedSnapshot[]): string {
   if (points.length === 0) {
     return `<div class="chart-wrap"><p class="muted">Not enough data yet.</p></div>`;
@@ -458,29 +423,66 @@ function renderAffectedChart(points: AffectedSnapshot[]): string {
 </script>`;
 }
 
-function renderCityPanel(rows: CityTotal[], affectedSnapshots: AffectedSnapshot[]): string {
-  const totalOutages = rows.reduce((sum, r) => sum + r.outage_count, 0);
-  const totalAffected = rows.reduce((sum, r) => sum + r.total_affected, 0);
+function renderAffectedChartCard(points: AffectedSnapshot[]): string {
+  return `<section class="card">
+<h2>Total customers affected</h2>
+${renderAffectedChart(points)}
+</section>`;
+}
 
-  const items = rows
-    .map((r) => `<tr><td>${escapeHtml(r.city)}</td><td>${r.outage_count}</td><td>${r.total_affected}</td></tr>`)
+// Covers every status the feed emits: a freshly reported outage starts
+// with an empty status before the utility assesses it.
+const STATUS_COLUMNS = [
+  { label: "Reported", test: /^$/ },
+  { label: "Assessing", test: /assess/i },
+  { label: "Assigned", test: /assign/i },
+  { label: "Onsite", test: /on-?site/i },
+];
+
+function renderCityPanel(cityTotals: CityTotal[], cityStatusCounts: CityStatusCount[]): string {
+  const totalOutages = cityTotals.reduce((sum, r) => sum + r.outage_count, 0);
+  const totalAffected = cityTotals.reduce((sum, r) => sum + r.total_affected, 0);
+  const onSiteTest = STATUS_COLUMNS.find((c) => c.label === "Onsite")!.test;
+  const onSite = cityStatusCounts.filter((r) => onSiteTest.test(r.status)).reduce((sum, r) => sum + r.count, 0);
+
+  const cityCounts = new Map<string, number[]>();
+  for (const r of cityStatusCounts) {
+    const colIndex = STATUS_COLUMNS.findIndex((c) => c.test.test(r.status));
+    if (colIndex === -1) continue;
+    const counts = cityCounts.get(r.city) ?? STATUS_COLUMNS.map(() => 0);
+    counts[colIndex] += r.count;
+    cityCounts.set(r.city, counts);
+  }
+
+  const header = `<th>City</th><th>Outages</th><th>Affected</th>${STATUS_COLUMNS.map(
+    (c) => `<th>${c.label}</th>`
+  ).join("")}`;
+  const bodyRows = cityTotals
+    .map((r) => {
+      const counts = cityCounts.get(r.city) ?? STATUS_COLUMNS.map(() => 0);
+      const statusCells = counts.map((c) => `<td>${c || "–"}</td>`).join("");
+      return `<tr><td>${escapeHtml(r.city)}</td><td>${r.outage_count}</td><td>${r.total_affected}</td>${statusCells}</tr>`;
+    })
     .join("\n");
 
-  return `<section class="card full-span">
-<h2>Total outages by city</h2>
+  const table =
+    cityTotals.length === 0
+      ? `<p class="muted">No active outages.</p>`
+      : `<div class="card-scroll">
+<table>
+<thead><tr>${header}</tr></thead>
+<tbody>${bodyRows}</tbody>
+</table>
+</div>`;
+
+  return `<section class="card">
+<h2>Outages by city</h2>
 <div class="stats">
   <div class="stat"><div class="value">${totalOutages}</div><div class="label">Active outages</div></div>
   <div class="stat"><div class="value">${totalAffected}</div><div class="label">Customers affected</div></div>
+  <div class="stat"><div class="value">${onSite}</div><div class="label">Crew on-site</div></div>
 </div>
-<div class="city-content">
-${renderAffectedChart(affectedSnapshots)}
-<div class="card-scroll">
-<table>
-<thead><tr><th>City</th><th>Outages</th><th>Affected</th></tr></thead>
-<tbody>${items}</tbody>
-</table>
-</div>
-</div>
+${table}
 </section>`;
 }
 
@@ -554,9 +556,11 @@ async function handleHome(env: Env, url: URL): Promise<Response> {
   <p>Live status pulled from the utility feed</p>
 </header>
 <main class="layout">
+<div class="stack">
 ${renderTimelinePanel(latParam, lngParam, searchError, nearest, timeline)}
-${renderCrewPanel(cityStatusCounts)}
-${renderCityPanel(cityTotals, affectedSnapshots)}
+${renderAffectedChartCard(affectedSnapshots)}
+</div>
+${renderCityPanel(cityTotals, cityStatusCounts)}
 </main>`;
 
   return html(pageShell(body), searchError ? 400 : 200);
