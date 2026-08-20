@@ -158,6 +158,22 @@ interface TimelineRow {
   valid_to: string | null;
 }
 
+interface AffectedSnapshot {
+  ts: string;
+  total_affected: number;
+}
+
+async function recordAffectedSnapshot(db: D1Database): Promise<void> {
+  const now = new Date().toISOString();
+  const row = await db
+    .prepare(`SELECT COALESCE(SUM(affected), 0) AS total FROM outage_states WHERE valid_to IS NULL`)
+    .first<{ total: number }>();
+  await db
+    .prepare(`INSERT INTO affected_snapshots (ts, total_affected) VALUES (?, ?)`)
+    .bind(now, row?.total ?? 0)
+    .run();
+}
+
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 }
@@ -221,17 +237,15 @@ const PAGE_STYLE = `
     min-height: 0;
     display: grid;
     grid-template-columns: minmax(320px, 1fr) minmax(340px, 1.1fr);
+    grid-template-rows: 2fr 3fr;
     gap: 1rem;
     padding: 0.75rem 1.5rem 1.5rem;
   }
-  .stack {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-    min-height: 0;
-  }
-  .stack .card:first-child { flex: 0 0 30%; }
-  .stack .card:last-child { flex: 1 1 auto; }
+  .full-span { grid-column: 1 / -1; }
+  .city-content { display: flex; gap: 1.25rem; flex: 1; min-height: 0; }
+  .city-content .chart-wrap { flex: 1 1 45%; min-height: 0; position: relative; }
+  .city-content .chart-wrap canvas { width: 100% !important; height: 100% !important; }
+  .city-content .card-scroll { flex: 1 1 55%; }
   .card {
     min-height: 0;
     display: flex;
@@ -349,7 +363,6 @@ function renderTimelinePanel(
   }
 
   return `<section class="card">
-<h2>Your outage timeline</h2>
 ${renderSearchForm(latParam, lngParam)}
 ${content}
 </section>`;
@@ -400,7 +413,52 @@ ${table}
 </section>`;
 }
 
-function renderCityPanel(rows: CityTotal[]): string {
+function renderAffectedChart(points: AffectedSnapshot[]): string {
+  if (points.length === 0) {
+    return `<div class="chart-wrap"><p class="muted">Not enough data yet.</p></div>`;
+  }
+
+  const labels = points.map((p) => formatTs(p.ts));
+  const totals = points.map((p) => p.total_affected);
+
+  return `<div class="chart-wrap"><canvas id="affectedChart"></canvas></div>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script>
+(function () {
+  const styles = getComputedStyle(document.documentElement);
+  const textColor = styles.getPropertyValue("--muted").trim() || "#6b7280";
+  const gridColor = styles.getPropertyValue("--border").trim() || "#e5e7eb";
+  const accent = styles.getPropertyValue("--accent").trim() || "#2563eb";
+
+  new Chart(document.getElementById("affectedChart"), {
+    type: "line",
+    data: {
+      labels: ${JSON.stringify(labels)},
+      datasets: [{
+        label: "Customers affected",
+        data: ${JSON.stringify(totals)},
+        borderColor: accent,
+        backgroundColor: accent + "26",
+        fill: true,
+        pointRadius: 0,
+        borderWidth: 2,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: { ticks: { color: textColor, maxRotation: 0, autoSkip: true, maxTicksLimit: 6 }, grid: { color: gridColor } },
+        y: { ticks: { color: textColor }, grid: { color: gridColor }, beginAtZero: true },
+      },
+      plugins: { legend: { display: false } },
+    },
+  });
+})();
+</script>`;
+}
+
+function renderCityPanel(rows: CityTotal[], affectedSnapshots: AffectedSnapshot[]): string {
   const totalOutages = rows.reduce((sum, r) => sum + r.outage_count, 0);
   const totalAffected = rows.reduce((sum, r) => sum + r.total_affected, 0);
 
@@ -408,17 +466,20 @@ function renderCityPanel(rows: CityTotal[]): string {
     .map((r) => `<tr><td>${escapeHtml(r.city)}</td><td>${r.outage_count}</td><td>${r.total_affected}</td></tr>`)
     .join("\n");
 
-  return `<section class="card">
+  return `<section class="card full-span">
 <h2>Total outages by city</h2>
 <div class="stats">
   <div class="stat"><div class="value">${totalOutages}</div><div class="label">Active outages</div></div>
   <div class="stat"><div class="value">${totalAffected}</div><div class="label">Customers affected</div></div>
 </div>
+<div class="city-content">
+${renderAffectedChart(affectedSnapshots)}
 <div class="card-scroll">
 <table>
 <thead><tr><th>City</th><th>Outages</th><th>Affected</th></tr></thead>
 <tbody>${items}</tbody>
 </table>
+</div>
 </div>
 </section>`;
 }
@@ -483,16 +544,19 @@ async function handleHome(env: Env, url: URL): Promise<Response> {
      ORDER BY o.city ASC`
   ).all<CityStatusCount>();
 
+  const { results: affectedSnapshotsDesc } = await env.DB.prepare(
+    `SELECT ts, total_affected FROM affected_snapshots ORDER BY ts DESC LIMIT 500`
+  ).all<AffectedSnapshot>();
+  const affectedSnapshots = affectedSnapshotsDesc.slice().reverse();
+
   const body = `<header>
   <h1>Outage tracker</h1>
   <p>Live status pulled from the utility feed</p>
 </header>
 <main class="layout">
 ${renderTimelinePanel(latParam, lngParam, searchError, nearest, timeline)}
-<div class="stack">
 ${renderCrewPanel(cityStatusCounts)}
-${renderCityPanel(cityTotals)}
-</div>
+${renderCityPanel(cityTotals, affectedSnapshots)}
 </main>`;
 
   return html(pageShell(body), searchError ? 400 : 200);
@@ -512,5 +576,6 @@ export default {
     }
     const data = await res.json<FeedResponse>();
     await syncOutages(env.DB, data.outageList);
+    await recordAffectedSnapshot(env.DB);
   },
 } satisfies ExportedHandler<Env>;
