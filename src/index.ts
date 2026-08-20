@@ -130,12 +130,6 @@ async function syncOutages(db: D1Database, records: RawOutage[]): Promise<void> 
   await runInBatches(db, [...newOutageStmts, ...closeStmts, ...insertStateStmts, ...resolveStmts]);
 }
 
-interface CityTotal {
-  city: string;
-  outage_count: number;
-  total_affected: number;
-}
-
 interface NearestOutage {
   outage_id: string;
   lat: number;
@@ -160,15 +154,24 @@ interface AffectedSnapshot {
   total_affected: number;
 }
 
-async function recordAffectedSnapshot(db: D1Database): Promise<void> {
+// One row per (city, status) currently open. Live query, used both to render
+// the "now" numbers and to persist a snapshot at ingest time.
+const LIVE_CITY_STATUS_SQL = `
+  SELECT o.city AS city, os.status AS status, COUNT(*) AS count, SUM(os.affected) AS affected
+  FROM outage_states os
+  JOIN outages o ON o.outage_id = os.outage_id
+  WHERE os.valid_to IS NULL
+  GROUP BY o.city, os.status`;
+
+async function recordSnapshot(db: D1Database): Promise<void> {
   const now = new Date().toISOString();
-  const row = await db
-    .prepare(`SELECT COALESCE(SUM(affected), 0) AS total FROM outage_states WHERE valid_to IS NULL`)
-    .first<{ total: number }>();
-  await db
-    .prepare(`INSERT INTO affected_snapshots (ts, total_affected) VALUES (?, ?)`)
-    .bind(now, row?.total ?? 0)
-    .run();
+  const { results } = await db.prepare(LIVE_CITY_STATUS_SQL).all<SnapshotRow>();
+  const stmts = results.map((r) =>
+    db
+      .prepare(`INSERT INTO outage_snapshots (ts, city, status, count, affected) VALUES (?, ?, ?, ?, ?)`)
+      .bind(now, r.city, r.status, r.count, r.affected)
+  );
+  await runInBatches(db, stmts);
 }
 
 function escapeHtml(s: string): string {
@@ -299,6 +302,9 @@ const PAGE_STYLE = `
   .stat { flex: 1; background: var(--bg); border-radius: 8px; padding: 0.55rem 0.75rem; }
   .stat .value { font-size: 1.25rem; font-weight: 700; line-height: 1.2; }
   .stat .label { font-size: 0.68rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+  .delta { font-size: 0.72rem; font-weight: 600; white-space: nowrap; }
+  .delta-up { color: var(--pill-active-text); }
+  .delta-down { color: var(--pill-resolved-text); }
   .error { color: var(--error); font-size: 0.85rem; }
   .muted { color: var(--muted); font-size: 0.85rem; }
   .match { font-size: 0.85rem; margin: 0 0 0.85rem; color: var(--muted); }
@@ -407,10 +413,11 @@ ${content}
 </section>`;
 }
 
-interface CityStatusCount {
+interface SnapshotRow {
   city: string;
   status: string;
   count: number;
+  affected: number;
 }
 
 function renderAffectedChart(points: AffectedSnapshot[]): string {
@@ -474,34 +481,69 @@ ${renderAffectedChart(points)}
 </section>`;
 }
 
-function renderCityPanel(cityTotals: CityTotal[], cityStatusCounts: CityStatusCount[]): string {
-  const totalOutages = cityTotals.reduce((sum, r) => sum + r.outage_count, 0);
-  const totalAffected = cityTotals.reduce((sum, r) => sum + r.total_affected, 0);
-  const onSiteTest = STATUS_COLUMNS.find((c) => c.label === "Onsite")!.test;
-  const onSite = cityStatusCounts.filter((r) => onSiteTest.test(r.status)).reduce((sum, r) => sum + r.count, 0);
+interface CityAgg {
+  outageCount: number;
+  affected: number;
+  statusCounts: number[];
+}
 
-  const cityCounts = new Map<string, number[]>();
-  for (const r of cityStatusCounts) {
+function aggregateByCity(rows: SnapshotRow[]): Map<string, CityAgg> {
+  const byCity = new Map<string, CityAgg>();
+  for (const r of rows) {
+    const agg = byCity.get(r.city) ?? { outageCount: 0, affected: 0, statusCounts: STATUS_COLUMNS.map(() => 0) };
+    agg.outageCount += r.count;
+    agg.affected += r.affected;
     const colIndex = STATUS_COLUMNS.findIndex((c) => c.test.test(r.status));
-    if (colIndex === -1) continue;
-    const counts = cityCounts.get(r.city) ?? STATUS_COLUMNS.map(() => 0);
-    counts[colIndex] += r.count;
-    cityCounts.set(r.city, counts);
+    if (colIndex !== -1) agg.statusCounts[colIndex] += r.count;
+    byCity.set(r.city, agg);
   }
+  return byCity;
+}
 
-  const header = `<th>City</th><th>Outages</th><th>Affected</th>${STATUS_COLUMNS.map(
+function aggregateTotals(rows: SnapshotRow[]): { outages: number; affected: number; onSite: number } {
+  const onSiteTest = STATUS_COLUMNS.find((c) => c.label === "Onsite")!.test;
+  let outages = 0;
+  let affected = 0;
+  let onSite = 0;
+  for (const r of rows) {
+    outages += r.count;
+    affected += r.affected;
+    if (onSiteTest.test(r.status)) onSite += r.count;
+  }
+  return { outages, affected, onSite };
+}
+
+function renderDelta(delta: number): string {
+  if (delta === 0) return "";
+  const cls = delta > 0 ? "delta-up" : "delta-down";
+  const arrow = delta > 0 ? "↑" : "↓";
+  return ` <span class="delta ${cls}">${arrow}${Math.abs(delta).toLocaleString()}</span>`;
+}
+
+function renderCityPanel(current: SnapshotRow[], baseline: SnapshotRow[]): string {
+  const currentTotals = aggregateTotals(current);
+  const baselineTotals = aggregateTotals(baseline);
+  const currentByCity = aggregateByCity(current);
+  const baselineByCity = aggregateByCity(baseline);
+
+  const cities = Array.from(currentByCity.keys()).sort();
+
+  const header = `<th>City</th><th>Affected</th><th>Outages</th>${STATUS_COLUMNS.map(
     (c) => `<th>${c.label}</th>`
   ).join("")}`;
-  const bodyRows = cityTotals
-    .map((r) => {
-      const counts = cityCounts.get(r.city) ?? STATUS_COLUMNS.map(() => 0);
-      const statusCells = counts.map((c) => `<td>${c || "–"}</td>`).join("");
-      return `<tr><td>${escapeHtml(r.city)}</td><td>${r.outage_count}</td><td>${r.total_affected}</td>${statusCells}</tr>`;
+  const bodyRows = cities
+    .map((city) => {
+      const agg = currentByCity.get(city)!;
+      const prevAffected = baselineByCity.get(city)?.affected ?? 0;
+      const statusCells = agg.statusCounts.map((c) => `<td>${c || "–"}</td>`).join("");
+      return `<tr><td>${escapeHtml(city)}</td><td>${agg.affected.toLocaleString()}${renderDelta(
+        agg.affected - prevAffected
+      )}</td><td>${agg.outageCount}</td>${statusCells}</tr>`;
     })
     .join("\n");
 
   const table =
-    cityTotals.length === 0
+    cities.length === 0
       ? `<p class="muted">No active outages.</p>`
       : `<div class="card-scroll">
 <table>
@@ -513,9 +555,15 @@ function renderCityPanel(cityTotals: CityTotal[], cityStatusCounts: CityStatusCo
   return `<section class="card">
 <h2>Outages by city</h2>
 <div class="stats">
-  <div class="stat"><div class="value">${totalOutages}</div><div class="label">Active outages</div></div>
-  <div class="stat"><div class="value">${totalAffected}</div><div class="label">Customers affected</div></div>
-  <div class="stat"><div class="value">${onSite}</div><div class="label">Crew on-site</div></div>
+  <div class="stat"><div class="value">${currentTotals.affected.toLocaleString()}${renderDelta(
+    currentTotals.affected - baselineTotals.affected
+  )}</div><div class="label">Customers affected</div></div>
+  <div class="stat"><div class="value">${currentTotals.outages.toLocaleString()}${renderDelta(
+    currentTotals.outages - baselineTotals.outages
+  )}</div><div class="label">Active outages</div></div>
+  <div class="stat"><div class="value">${currentTotals.onSite.toLocaleString()}${renderDelta(
+    currentTotals.onSite - baselineTotals.onSite
+  )}</div><div class="label">Crew on-site</div></div>
 </div>
 ${table}
 </section>`;
@@ -580,26 +628,22 @@ async function handleHome(env: Env, url: URL): Promise<Response> {
     }
   }
 
-  const { results: cityTotals } = await env.DB.prepare(
-    `SELECT o.city AS city, COUNT(*) AS outage_count, SUM(os.affected) AS total_affected
-     FROM outage_states os
-     JOIN outages o ON o.outage_id = os.outage_id
-     WHERE os.valid_to IS NULL
-     GROUP BY o.city
-     ORDER BY o.city ASC`
-  ).all<CityTotal>();
+  const { results: currentSnapshot } = await env.DB.prepare(LIVE_CITY_STATUS_SQL).all<SnapshotRow>();
 
-  const { results: cityStatusCounts } = await env.DB.prepare(
-    `SELECT o.city AS city, os.status AS status, COUNT(*) AS count
-     FROM outage_states os
-     JOIN outages o ON o.outage_id = os.outage_id
-     WHERE os.valid_to IS NULL
-     GROUP BY o.city, os.status
-     ORDER BY o.city ASC`
-  ).all<CityStatusCount>();
+  const hourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const baselineTs = await env.DB.prepare(`SELECT MAX(ts) AS ts FROM outage_snapshots WHERE ts <= ?`)
+    .bind(hourAgo)
+    .first<{ ts: string | null }>();
+  const baselineSnapshot = baselineTs?.ts
+    ? (
+        await env.DB.prepare(`SELECT city, status, count, affected FROM outage_snapshots WHERE ts = ?`)
+          .bind(baselineTs.ts)
+          .all<SnapshotRow>()
+      ).results
+    : [];
 
   const { results: affectedSnapshotsDesc } = await env.DB.prepare(
-    `SELECT ts, total_affected FROM affected_snapshots ORDER BY ts DESC LIMIT 500`
+    `SELECT ts, SUM(affected) AS total_affected FROM outage_snapshots GROUP BY ts ORDER BY ts DESC LIMIT 500`
   ).all<AffectedSnapshot>();
   const affectedSnapshots = affectedSnapshotsDesc.slice().reverse();
 
@@ -610,7 +654,7 @@ async function handleHome(env: Env, url: URL): Promise<Response> {
 <main class="layout">
 ${renderTimelinePanel(addressParam, searchError, nearest, distanceMiles, timeline)}
 <div class="stack">
-${renderCityPanel(cityTotals, cityStatusCounts)}
+${renderCityPanel(currentSnapshot, baselineSnapshot)}
 ${renderAffectedChartCard(affectedSnapshots)}
 </div>
 </main>`;
@@ -632,7 +676,7 @@ async function handleIngest(request: Request, env: Env & { INGEST_TOKEN?: string
   }
 
   await syncOutages(env.DB, data.outageList);
-  await recordAffectedSnapshot(env.DB);
+  await recordSnapshot(env.DB);
   return new Response("ok", { status: 200 });
 }
 
