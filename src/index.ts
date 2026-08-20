@@ -618,7 +618,7 @@ ${renderAffectedChartCard(affectedSnapshots)}
   return html(pageShell(body), searchError ? 400 : 200);
 }
 
-async function handleIngest(request: Request, env: Env): Promise<Response> {
+async function handleIngest(request: Request, env: Env & { INGEST_TOKEN?: string }): Promise<Response> {
   const auth = request.headers.get("Authorization");
   if (!env.INGEST_TOKEN || auth !== `Bearer ${env.INGEST_TOKEN}`) {
     return new Response("Unauthorized", { status: 401 });
