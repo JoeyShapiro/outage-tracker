@@ -1,6 +1,3 @@
-// TODO: replace with the real feed URL once you have it.
-const FEED_URL = "https://www.nipsco.com/nisource-api/ldc/GetPowerOutages";
-
 interface RawOutage {
   affected: number;
   cause: string;
@@ -621,20 +618,30 @@ ${renderAffectedChartCard(affectedSnapshots)}
   return html(pageShell(body), searchError ? 400 : 200);
 }
 
+async function handleIngest(request: Request, env: Env): Promise<Response> {
+  const auth = request.headers.get("Authorization");
+  if (!env.INGEST_TOKEN || auth !== `Bearer ${env.INGEST_TOKEN}`) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  let data: FeedResponse;
+  try {
+    data = await request.json<FeedResponse>();
+  } catch {
+    return new Response("Invalid JSON", { status: 400 });
+  }
+
+  await syncOutages(env.DB, data.outageList);
+  await recordAffectedSnapshot(env.DB);
+  return new Response("ok", { status: 200 });
+}
+
 export default {
   async fetch(request, env, ctx): Promise<Response> {
     const url = new URL(request.url);
-    return handleHome(env, url);
-  },
-
-  async scheduled(event, env, ctx): Promise<void> {
-    const res = await fetch(FEED_URL);
-    if (!res.ok) {
-      console.error(`outage-tracker: feed fetch failed with ${res.status}`);
-      return;
+    if (url.pathname === "/ingest" && request.method === "POST") {
+      return handleIngest(request, env);
     }
-    const data = await res.json<FeedResponse>();
-    await syncOutages(env.DB, data.outageList);
-    await recordAffectedSnapshot(env.DB);
+    return handleHome(env, url);
   },
 } satisfies ExportedHandler<Env>;

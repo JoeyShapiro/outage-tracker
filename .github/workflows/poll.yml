@@ -1,0 +1,27 @@
+name: Poll outage feed
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch feed and forward to Worker
+        env:
+          INGEST_URL: https://outage-tracker.joeyashapiro.workers.dev/ingest
+          INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          curl -sf "https://www.nipsco.com/nisource-api/ldc/GetPowerOutages" \
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
+            -H "Accept: application/json" \
+            -o feed.json
+
+          curl -sf -X POST "$INGEST_URL" \
+            -H "Authorization: Bearer $INGEST_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data-binary @feed.json
