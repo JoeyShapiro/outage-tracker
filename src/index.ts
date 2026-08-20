@@ -220,10 +220,18 @@ const PAGE_STYLE = `
     flex: 1;
     min-height: 0;
     display: grid;
-    grid-template-columns: minmax(320px, 1fr) minmax(360px, 1.2fr);
+    grid-template-columns: minmax(320px, 1fr) minmax(340px, 1.1fr);
     gap: 1rem;
     padding: 0.75rem 1.5rem 1.5rem;
   }
+  .stack {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    min-height: 0;
+  }
+  .stack .card:first-child { flex: 0 0 30%; }
+  .stack .card:last-child { flex: 1 1 auto; }
   .card {
     min-height: 0;
     display: flex;
@@ -347,6 +355,34 @@ ${content}
 </section>`;
 }
 
+interface StatusCount {
+  status: string;
+  count: number;
+}
+
+function renderCrewPanel(rows: StatusCount[]): string {
+  const onSite = rows.find((r) => /on-site/i.test(r.status))?.count ?? 0;
+
+  const items = rows
+    .map((r) => `<tr><td>${escapeHtml(r.status || "Unknown")}</td><td>${r.count}</td></tr>`)
+    .join("\n");
+
+  const table =
+    rows.length === 0
+      ? `<p class="muted">No active outages.</p>`
+      : `<div class="card-scroll">
+<table>
+<thead><tr><th>Status</th><th>Count</th></tr></thead>
+<tbody>${items}</tbody>
+</table>
+</div>`;
+
+  return `<section class="card">
+<h2>Crew status (${onSite} on-site)</h2>
+${table}
+</section>`;
+}
+
 function renderCityPanel(rows: CityTotal[]): string {
   const totalOutages = rows.reduce((sum, r) => sum + r.outage_count, 0);
   const totalAffected = rows.reduce((sum, r) => sum + r.total_affected, 0);
@@ -421,13 +457,24 @@ async function handleHome(env: Env, url: URL): Promise<Response> {
      ORDER BY o.city ASC`
   ).all<CityTotal>();
 
+  const { results: statusCounts } = await env.DB.prepare(
+    `SELECT status, COUNT(*) AS count
+     FROM outage_states
+     WHERE valid_to IS NULL
+     GROUP BY status
+     ORDER BY count DESC`
+  ).all<StatusCount>();
+
   const body = `<header>
   <h1>Outage tracker</h1>
   <p>Live status pulled from the utility feed</p>
 </header>
 <main class="layout">
 ${renderTimelinePanel(latParam, lngParam, searchError, nearest, timeline)}
+<div class="stack">
+${renderCrewPanel(statusCounts)}
 ${renderCityPanel(cityTotals)}
+</div>
 </main>`;
 
   return html(pageShell(body), searchError ? 400 : 200);
