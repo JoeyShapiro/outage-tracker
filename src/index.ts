@@ -139,62 +139,6 @@ interface CityTotal {
   total_affected: number;
 }
 
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
-}
-
-function pageShell(title: string, body: string): string {
-  return `<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>${escapeHtml(title)}</title>
-<style>
-  body { font-family: system-ui, sans-serif; margin: 2rem; }
-  table { border-collapse: collapse; width: 100%; max-width: 600px; }
-  th, td { text-align: left; padding: 0.4rem 0.8rem; border-bottom: 1px solid #ddd; }
-  th { font-weight: 600; }
-  form { margin: 1rem 0 2rem; display: flex; gap: 0.5rem; align-items: end; }
-  label { display: flex; flex-direction: column; font-size: 0.85rem; }
-  input { padding: 0.3rem; }
-  .error { color: #b00020; }
-  .muted { color: #666; }
-</style>
-</head>
-<body>
-${body}
-</body>
-</html>`;
-}
-
-function renderSearchForm(lat?: string, lng?: string): string {
-  return `<form method="GET" action="/search">
-  <label>Latitude <input type="number" step="any" name="lat" value="${escapeHtml(lat ?? "")}" required></label>
-  <label>Longitude <input type="number" step="any" name="lng" value="${escapeHtml(lng ?? "")}" required></label>
-  <button type="submit">Find my outages</button>
-</form>`;
-}
-
-function renderCityList(rows: CityTotal[]): string {
-  const items = rows
-    .map(
-      (r) =>
-        `<tr><td>${escapeHtml(r.city)}</td><td>${r.outage_count}</td><td>${r.total_affected}</td></tr>`
-    )
-    .join("\n");
-
-  return pageShell(
-    "Current outages",
-    `<h1>Find your outage</h1>
-${renderSearchForm()}
-<h2>Current outages by city</h2>
-<table>
-<thead><tr><th>City</th><th>Outages</th><th>Affected</th></tr></thead>
-<tbody>${items}</tbody>
-</table>`
-  );
-}
-
 interface NearestOutage {
   outage_id: string;
   lat: number;
@@ -214,48 +158,261 @@ interface TimelineRow {
   valid_to: string | null;
 }
 
-function renderSearchResults(lat: string, lng: string, nearest: NearestOutage | null, timeline: TimelineRow[]): string {
-  if (!nearest) {
-    return pageShell(
-      "No outages found",
-      `<h1>Find your outage</h1>
-${renderSearchForm(lat, lng)}
-<p class="muted">No outages have been recorded yet.</p>`
-    );
-  }
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
+}
 
-  const rows = timeline
-    .map(
-      (r) =>
-        `<tr>
-          <td>${escapeHtml(r.status)}</td>
+function formatTs(iso: string): string {
+  return iso.replace("T", " ").replace(/\.\d+Z?$/, "").replace(/Z$/, "");
+}
+
+function statusPillClass(status: string): string {
+  return /restor/i.test(status) ? "pill pill-resolved" : "pill pill-active";
+}
+
+const PAGE_STYLE = `
+  :root {
+    --bg: #f5f6f8;
+    --card-bg: #ffffff;
+    --text: #1a1d21;
+    --muted: #6b7280;
+    --border: #e5e7eb;
+    --accent: #2563eb;
+    --accent-contrast: #ffffff;
+    --error: #dc2626;
+    --pill-active-bg: #fff4e5;
+    --pill-active-text: #9a5b00;
+    --pill-resolved-bg: #e6f4ea;
+    --pill-resolved-text: #1e7e34;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115;
+      --card-bg: #171a21;
+      --text: #e5e7eb;
+      --muted: #9aa1ab;
+      --border: #2a2e37;
+      --accent: #3b82f6;
+      --accent-contrast: #0f1115;
+      --error: #f87171;
+      --pill-active-bg: #3a2a10;
+      --pill-active-text: #f3b45c;
+      --pill-resolved-bg: #16311f;
+      --pill-resolved-text: #6bd48a;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  header { flex: none; padding: 1.25rem 1.5rem 0.5rem; }
+  header h1 { margin: 0; font-size: 1.25rem; }
+  header p { margin: 0.2rem 0 0; color: var(--muted); font-size: 0.85rem; }
+  main.layout {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(320px, 1fr) minmax(360px, 1.2fr);
+    gap: 1rem;
+    padding: 0.75rem 1.5rem 1.5rem;
+  }
+  .card {
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.1rem 1.25rem;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  }
+  .card h2 {
+    margin: 0 0 0.85rem;
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+  }
+  .card-scroll { overflow-y: auto; min-height: 0; }
+  form.search { display: flex; gap: 0.6rem; align-items: end; flex-wrap: wrap; margin-bottom: 1rem; }
+  label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.75rem; color: var(--muted); }
+  input {
+    padding: 0.45rem 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 0.9rem;
+    width: 9rem;
+  }
+  button {
+    padding: 0.5rem 1rem;
+    border: none;
+    border-radius: 8px;
+    background: var(--accent);
+    color: var(--accent-contrast);
+    font-weight: 600;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+  button:hover { opacity: 0.92; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--border); font-size: 0.85rem; }
+  th { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); position: sticky; top: 0; background: var(--card-bg); }
+  .pill { display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px; font-size: 0.72rem; font-weight: 600; }
+  .pill-active { background: var(--pill-active-bg); color: var(--pill-active-text); }
+  .pill-resolved { background: var(--pill-resolved-bg); color: var(--pill-resolved-text); }
+  .stats { display: flex; gap: 0.6rem; margin-bottom: 0.85rem; }
+  .stat { flex: 1; background: var(--bg); border-radius: 8px; padding: 0.55rem 0.75rem; }
+  .stat .value { font-size: 1.25rem; font-weight: 700; line-height: 1.2; }
+  .stat .label { font-size: 0.68rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+  .error { color: var(--error); font-size: 0.85rem; }
+  .muted { color: var(--muted); font-size: 0.85rem; }
+  .match { font-size: 0.85rem; margin: 0 0 0.85rem; color: var(--muted); }
+  .match strong { color: var(--text); }
+`;
+
+function pageShell(body: string): string {
+  return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Outage tracker</title>
+<style>${PAGE_STYLE}</style>
+</head>
+<body>
+${body}
+</body>
+</html>`;
+}
+
+function renderSearchForm(lat: string, lng: string): string {
+  return `<form class="search" method="GET" action="/">
+  <label>Latitude <input type="number" step="any" name="lat" value="${escapeHtml(lat)}" required></label>
+  <label>Longitude <input type="number" step="any" name="lng" value="${escapeHtml(lng)}" required></label>
+  <button type="submit">Find my outages</button>
+</form>`;
+}
+
+function renderTimelinePanel(
+  latParam: string,
+  lngParam: string,
+  searchError: boolean,
+  nearest: NearestOutage | null,
+  timeline: TimelineRow[]
+): string {
+  let content: string;
+
+  if (searchError) {
+    content = `<p class="error">Enter a valid latitude and longitude.</p>`;
+  } else if (!latParam && !lngParam) {
+    content = `<p class="muted">Enter your coordinates to see your outage history.</p>`;
+  } else if (!nearest) {
+    content = `<p class="muted">No outages have been recorded yet.</p>`;
+  } else {
+    const rows = timeline
+      .map(
+        (r) => `<tr>
+          <td><span class="${statusPillClass(r.status)}">${escapeHtml(r.status)}</span></td>
           <td>${escapeHtml(r.cause ?? "")}</td>
           <td>${r.affected}</td>
-          <td>${escapeHtml(r.valid_from)}</td>
-          <td>${r.valid_to ? escapeHtml(r.valid_to) : "ongoing"}</td>
+          <td>${formatTs(r.valid_from)}</td>
+          <td>${r.valid_to ? formatTs(r.valid_to) : "ongoing"}</td>
         </tr>`
-    )
-    .join("\n");
+      )
+      .join("\n");
 
-  return pageShell(
-    "Your outage timeline",
-    `<h1>Find your outage</h1>
-${renderSearchForm(lat, lng)}
-<p>Nearest known location: <strong>${escapeHtml(nearest.city)}, ${escapeHtml(nearest.zip)}</strong>
-(${nearest.lat}, ${nearest.lng})</p>
+    content = `<p class="match">Nearest known location: <strong>${escapeHtml(nearest.city)}, ${escapeHtml(nearest.zip)}</strong> (${nearest.lat}, ${nearest.lng})</p>
+<div class="card-scroll">
 <table>
 <thead><tr><th>Status</th><th>Cause</th><th>Affected</th><th>From</th><th>To</th></tr></thead>
 <tbody>${rows}</tbody>
-</table>`
-  );
+</table>
+</div>`;
+  }
+
+  return `<section class="card">
+<h2>Your outage timeline</h2>
+${renderSearchForm(latParam, lngParam)}
+${content}
+</section>`;
+}
+
+function renderCityPanel(rows: CityTotal[]): string {
+  const totalOutages = rows.reduce((sum, r) => sum + r.outage_count, 0);
+  const totalAffected = rows.reduce((sum, r) => sum + r.total_affected, 0);
+
+  const items = rows
+    .map((r) => `<tr><td>${escapeHtml(r.city)}</td><td>${r.outage_count}</td><td>${r.total_affected}</td></tr>`)
+    .join("\n");
+
+  return `<section class="card">
+<h2>Total outages by city</h2>
+<div class="stats">
+  <div class="stat"><div class="value">${totalOutages}</div><div class="label">Active outages</div></div>
+  <div class="stat"><div class="value">${totalAffected}</div><div class="label">Customers affected</div></div>
+</div>
+<div class="card-scroll">
+<table>
+<thead><tr><th>City</th><th>Outages</th><th>Affected</th></tr></thead>
+<tbody>${items}</tbody>
+</table>
+</div>
+</section>`;
 }
 
 function html(body: string, status = 200): Response {
   return new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
 }
 
-async function handleHome(env: Env): Promise<Response> {
-  const { results } = await env.DB.prepare(
+async function handleHome(env: Env, url: URL): Promise<Response> {
+  const latParam = url.searchParams.get("lat") ?? "";
+  const lngParam = url.searchParams.get("lng") ?? "";
+  const searched = latParam !== "" || lngParam !== "";
+  const lat = Number(latParam);
+  const lng = Number(lngParam);
+  const searchError = searched && (latParam === "" || lngParam === "" || !Number.isFinite(lat) || !Number.isFinite(lng));
+
+  let nearest: NearestOutage | null = null;
+  let timeline: TimelineRow[] = [];
+
+  if (searched && !searchError) {
+    // Nearest-neighbor by plain squared distance in degree space -- fine at the
+    // scale of a single utility's service territory, no need for haversine.
+    nearest = await env.DB.prepare(
+      `SELECT outage_id, lat, lng, city, zip
+       FROM outages
+       ORDER BY (lat - ?) * (lat - ?) + (lng - ?) * (lng - ?) ASC
+       LIMIT 1`
+    )
+      .bind(lat, lat, lng, lng)
+      .first<NearestOutage>();
+
+    if (nearest) {
+      const result = await env.DB.prepare(
+        `SELECT os.status, os.cause, os.comment, os.affected, os.max_affected, os.restore_estimate,
+                os.valid_from, os.valid_to
+         FROM outage_states os
+         JOIN outages o ON o.outage_id = os.outage_id
+         WHERE o.lat = ? AND o.lng = ?
+         ORDER BY os.valid_from ASC`
+      )
+        .bind(nearest.lat, nearest.lng)
+        .all<TimelineRow>();
+      timeline = result.results;
+    }
+  }
+
+  const { results: cityTotals } = await env.DB.prepare(
     `SELECT o.city AS city, COUNT(*) AS outage_count, SUM(os.affected) AS total_affected
      FROM outage_states os
      JOIN outages o ON o.outage_id = os.outage_id
@@ -264,61 +421,22 @@ async function handleHome(env: Env): Promise<Response> {
      ORDER BY o.city ASC`
   ).all<CityTotal>();
 
-  return html(renderCityList(results));
-}
+  const body = `<header>
+  <h1>Outage tracker</h1>
+  <p>Live status pulled from the utility feed</p>
+</header>
+<main class="layout">
+${renderTimelinePanel(latParam, lngParam, searchError, nearest, timeline)}
+${renderCityPanel(cityTotals)}
+</main>`;
 
-async function handleSearch(env: Env, url: URL): Promise<Response> {
-  const latParam = url.searchParams.get("lat") ?? "";
-  const lngParam = url.searchParams.get("lng") ?? "";
-  const lat = Number(latParam);
-  const lng = Number(lngParam);
-
-  if (latParam === "" || lngParam === "" || !Number.isFinite(lat) || !Number.isFinite(lng)) {
-    return html(
-      pageShell(
-        "Invalid search",
-        `<h1>Find your outage</h1>
-${renderSearchForm(latParam, lngParam)}
-<p class="error">Enter a valid latitude and longitude.</p>`
-      ),
-      400
-    );
-  }
-
-  // Nearest-neighbor by plain squared distance in degree space -- fine at the
-  // scale of a single utility's service territory, no need for haversine.
-  const nearest = await env.DB.prepare(
-    `SELECT outage_id, lat, lng, city, zip
-     FROM outages
-     ORDER BY (lat - ?) * (lat - ?) + (lng - ?) * (lng - ?) ASC
-     LIMIT 1`
-  )
-    .bind(lat, lat, lng, lng)
-    .first<NearestOutage>();
-
-  if (!nearest) {
-    return html(renderSearchResults(latParam, lngParam, null, []));
-  }
-
-  const { results: timeline } = await env.DB.prepare(
-    `SELECT os.status, os.cause, os.comment, os.affected, os.max_affected, os.restore_estimate,
-            os.valid_from, os.valid_to
-     FROM outage_states os
-     JOIN outages o ON o.outage_id = os.outage_id
-     WHERE o.lat = ? AND o.lng = ?
-     ORDER BY os.valid_from ASC`
-  )
-    .bind(nearest.lat, nearest.lng)
-    .all<TimelineRow>();
-
-  return html(renderSearchResults(latParam, lngParam, nearest, timeline));
+  return html(pageShell(body), searchError ? 400 : 200);
 }
 
 export default {
   async fetch(request, env, ctx): Promise<Response> {
     const url = new URL(request.url);
-    if (url.pathname === "/search") return handleSearch(env, url);
-    return handleHome(env);
+    return handleHome(env, url);
   },
 
   async scheduled(event, env, ctx): Promise<void> {
