@@ -404,6 +404,7 @@ function renderMap(
 
   return `<div class="map-wrap"><div id="outage-map"></div></div>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 (function () {
@@ -419,42 +420,32 @@ function renderMap(
   }).addTo(map);
   L.control.attribution({ prefix: false }).addTo(map);
 
-  function truckIcon(color, size) {
+  function faIcon(iconHtml, color, size) {
     return L.divIcon({
-      html: '<div style="width:' + size + 'px;height:' + size + 'px;border-radius:50%;background:' + color + ';display:flex;align-items:center;justify-content:center;font-size:' + Math.round(size * 0.65) + 'px;line-height:1;">🚚</div>',
+      html: '<div style="position:relative;width:' + size + 'px;height:' + size + 'px;border-radius:50%;background:' + color + ';color:#fff;font-size:' + Math.round(size * 0.55) + 'px;">' + iconHtml + '</div>',
       className: "",
       iconSize: [size, size],
       iconAnchor: [size / 2, size / 2],
     });
   }
 
+  function centered(inner) {
+    return '<i class="' + inner + '" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);"></i>';
+  }
+
+  // Free Font Awesome has no single "bolt-slash" glyph -- Pro only -- so a
+  // plain outage marker is built by stacking the free bolt and slash icons.
+  const truckHtml = centered("fa-solid fa-truck");
+  const boltSlashHtml = centered("fa-solid fa-bolt") + centered("fa-solid fa-slash");
+
   nearby.forEach(function (pt) {
     const point = [pt[0], pt[1]];
-    if (pt[2]) {
-      L.marker(point, { icon: truckIcon("${NEARBY_MARKER_COLOR}", 18) }).addTo(map);
-    } else {
-      L.circleMarker(point, {
-        radius: 5,
-        color: "${NEARBY_MARKER_COLOR}",
-        fillColor: "${NEARBY_MARKER_COLOR}",
-        fillOpacity: 0.9,
-        weight: 1,
-      }).addTo(map);
-    }
+    const iconHtml = pt[2] ? truckHtml : boltSlashHtml;
+    L.marker(point, { icon: faIcon(iconHtml, "${NEARBY_MARKER_COLOR}", 18) }).addTo(map);
   });
 
   L.marker(entered).addTo(map).bindPopup("Your location");
-  if (nearestHasCrew) {
-    L.marker(nearest, { icon: truckIcon("${NEAREST_MARKER_COLOR}", 26) }).addTo(map).bindPopup("Nearest outage");
-  } else {
-    L.circleMarker(nearest, {
-      radius: 8,
-      color: "${NEAREST_MARKER_COLOR}",
-      fillColor: "${NEAREST_MARKER_COLOR}",
-      fillOpacity: 1,
-      weight: 2,
-    }).addTo(map).bindPopup("Nearest outage");
-  }
+  L.marker(nearest, { icon: faIcon(nearestHasCrew ? truckHtml : boltSlashHtml, "${NEAREST_MARKER_COLOR}", 26) }).addTo(map).bindPopup("Nearest outage");
 
   const bounds = L.latLngBounds([entered, nearest].concat(nearby.map(function (pt) { return [pt[0], pt[1]]; }))).pad(0.5);
   map.fitBounds(bounds, { maxZoom: 15 });
