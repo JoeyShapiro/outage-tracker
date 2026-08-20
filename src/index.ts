@@ -355,16 +355,33 @@ ${content}
 </section>`;
 }
 
-interface StatusCount {
+interface CityStatusCount {
+  city: string;
   status: string;
   count: number;
 }
 
-function renderCrewPanel(rows: StatusCount[]): string {
-  const onSite = rows.find((r) => /on-site/i.test(r.status))?.count ?? 0;
+function renderCrewPanel(rows: CityStatusCount[]): string {
+  const onSite = rows.filter((r) => /on-site/i.test(r.status)).reduce((sum, r) => sum + r.count, 0);
 
-  const items = rows
-    .map((r) => `<tr><td>${escapeHtml(r.status || "Unknown")}</td><td>${r.count}</td></tr>`)
+  const statusTotals = new Map<string, number>();
+  for (const r of rows) statusTotals.set(r.status, (statusTotals.get(r.status) ?? 0) + r.count);
+  const statuses = [...statusTotals.keys()].sort((a, b) => statusTotals.get(b)! - statusTotals.get(a)!);
+
+  const cityMap = new Map<string, Map<string, number>>();
+  for (const r of rows) {
+    if (!cityMap.has(r.city)) cityMap.set(r.city, new Map());
+    cityMap.get(r.city)!.set(r.status, r.count);
+  }
+  const cities = [...cityMap.keys()].sort();
+
+  const header = `<th>City</th>${statuses.map((s) => `<th>${escapeHtml(s || "Unknown")}</th>`).join("")}`;
+  const bodyRows = cities
+    .map((city) => {
+      const counts = cityMap.get(city)!;
+      const cells = statuses.map((s) => `<td>${counts.get(s) ?? "–"}</td>`).join("");
+      return `<tr><td>${escapeHtml(city)}</td>${cells}</tr>`;
+    })
     .join("\n");
 
   const table =
@@ -372,8 +389,8 @@ function renderCrewPanel(rows: StatusCount[]): string {
       ? `<p class="muted">No active outages.</p>`
       : `<div class="card-scroll">
 <table>
-<thead><tr><th>Status</th><th>Count</th></tr></thead>
-<tbody>${items}</tbody>
+<thead><tr>${header}</tr></thead>
+<tbody>${bodyRows}</tbody>
 </table>
 </div>`;
 
@@ -457,13 +474,14 @@ async function handleHome(env: Env, url: URL): Promise<Response> {
      ORDER BY o.city ASC`
   ).all<CityTotal>();
 
-  const { results: statusCounts } = await env.DB.prepare(
-    `SELECT status, COUNT(*) AS count
-     FROM outage_states
-     WHERE valid_to IS NULL
-     GROUP BY status
-     ORDER BY count DESC`
-  ).all<StatusCount>();
+  const { results: cityStatusCounts } = await env.DB.prepare(
+    `SELECT o.city AS city, os.status AS status, COUNT(*) AS count
+     FROM outage_states os
+     JOIN outages o ON o.outage_id = os.outage_id
+     WHERE os.valid_to IS NULL
+     GROUP BY o.city, os.status
+     ORDER BY o.city ASC`
+  ).all<CityStatusCount>();
 
   const body = `<header>
   <h1>Outage tracker</h1>
@@ -472,7 +490,7 @@ async function handleHome(env: Env, url: URL): Promise<Response> {
 <main class="layout">
 ${renderTimelinePanel(latParam, lngParam, searchError, nearest, timeline)}
 <div class="stack">
-${renderCrewPanel(statusCounts)}
+${renderCrewPanel(cityStatusCounts)}
 ${renderCityPanel(cityTotals)}
 </div>
 </main>`;
