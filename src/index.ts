@@ -322,6 +322,8 @@ const PAGE_STYLE = `
   .muted { color: var(--muted); font-size: 0.85rem; }
   .match { font-size: 0.85rem; margin: 0 0 0.85rem; color: var(--muted); }
   .match strong { color: var(--text); }
+  .map-wrap { flex: 0 0 50%; min-height: 0; margin-top: 0.75rem; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); }
+  .map-wrap #outage-map { width: 100%; height: 100%; }
 `;
 
 function pageShell(body: string): string {
@@ -381,9 +383,44 @@ function renderSearchForm(address: string): string {
 </script>`;
 }
 
+const NEAREST_MARKER_COLOR = "#f97316";
+
+function renderMap(lat: number, lng: number, nearestLat: number, nearestLng: number): string {
+  return `<div class="map-wrap"><div id="outage-map"></div></div>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function () {
+  const entered = [${lat}, ${lng}];
+  const nearest = [${nearestLat}, ${nearestLng}];
+
+  const map = L.map("outage-map", { zoomControl: false, attributionControl: false });
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap contributors',
+  }).addTo(map);
+  L.control.attribution({ prefix: false }).addTo(map);
+
+  L.marker(entered).addTo(map).bindPopup("Your location");
+  L.circleMarker(nearest, {
+    radius: 8,
+    color: "${NEAREST_MARKER_COLOR}",
+    fillColor: "${NEAREST_MARKER_COLOR}",
+    fillOpacity: 1,
+    weight: 2,
+  }).addTo(map).bindPopup("Nearest outage");
+
+  const bounds = L.latLngBounds([entered, nearest]).pad(0.5);
+  map.fitBounds(bounds, { maxZoom: 15 });
+})();
+</script>`;
+}
+
 function renderTimelinePanel(
   addressParam: string,
   searchError: boolean,
+  lat: number,
+  lng: number,
   nearest: NearestOutage | null,
   distanceMiles: number | null,
   timeline: TimelineRow[]
@@ -411,13 +448,14 @@ function renderTimelinePanel(
 
     const distanceLabel = distanceMiles !== null ? ` (${distanceMiles.toFixed(1)} mi away)` : "";
 
-    content = `<p class="match">Nearest known location: <strong>${escapeHtml(nearest.city)}, ${escapeHtml(nearest.zip)}</strong>${distanceLabel}</p>
+    content = `<p class="match">Nearest known location: <strong style="color: ${NEAREST_MARKER_COLOR}">${escapeHtml(nearest.city)}, ${escapeHtml(nearest.zip)}</strong>${distanceLabel}</p>
 <div class="card-scroll">
 <table>
 <thead><tr><th>Status</th><th>Cause</th><th>Affected</th><th>From</th><th>To</th></tr></thead>
 <tbody>${rows}</tbody>
 </table>
-</div>`;
+</div>
+${renderMap(lat, lng, nearest.lat, nearest.lng)}`;
   }
 
   return `<section class="card">
@@ -670,7 +708,7 @@ async function handleHome(env: Env, url: URL): Promise<Response> {
   </div>
 </header>
 <main class="layout">
-${renderTimelinePanel(addressParam, searchError, nearest, distanceMiles, timeline)}
+${renderTimelinePanel(addressParam, searchError, lat, lng, nearest, distanceMiles, timeline)}
 <div class="stack">
 ${renderCityPanel(currentSnapshot, baselineSnapshot)}
 ${renderAffectedChartCard(affectedSnapshots)}
