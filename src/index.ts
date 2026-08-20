@@ -143,6 +143,38 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 }
 
+function pageShell(title: string, body: string): string {
+  return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>${escapeHtml(title)}</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem; }
+  table { border-collapse: collapse; width: 100%; max-width: 600px; }
+  th, td { text-align: left; padding: 0.4rem 0.8rem; border-bottom: 1px solid #ddd; }
+  th { font-weight: 600; }
+  form { margin: 1rem 0 2rem; display: flex; gap: 0.5rem; align-items: end; }
+  label { display: flex; flex-direction: column; font-size: 0.85rem; }
+  input { padding: 0.3rem; }
+  .error { color: #b00020; }
+  .muted { color: #666; }
+</style>
+</head>
+<body>
+${body}
+</body>
+</html>`;
+}
+
+function renderSearchForm(lat?: string, lng?: string): string {
+  return `<form method="GET" action="/search">
+  <label>Latitude <input type="number" step="any" name="lat" value="${escapeHtml(lat ?? "")}" required></label>
+  <label>Longitude <input type="number" step="any" name="lng" value="${escapeHtml(lng ?? "")}" required></label>
+  <button type="submit">Find my outages</button>
+</form>`;
+}
+
 function renderCityList(rows: CityTotal[]): string {
   const items = rows
     .map(
@@ -151,40 +183,142 @@ function renderCityList(rows: CityTotal[]): string {
     )
     .join("\n");
 
-  return `<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>Current outages</title>
-<style>
-  body { font-family: system-ui, sans-serif; margin: 2rem; }
-  table { border-collapse: collapse; width: 100%; max-width: 480px; }
-  th, td { text-align: left; padding: 0.4rem 0.8rem; border-bottom: 1px solid #ddd; }
-  th { font-weight: 600; }
-</style>
-</head>
-<body>
-<h1>Current outages by city</h1>
+  return pageShell(
+    "Current outages",
+    `<h1>Find your outage</h1>
+${renderSearchForm()}
+<h2>Current outages by city</h2>
 <table>
 <thead><tr><th>City</th><th>Outages</th><th>Affected</th></tr></thead>
 <tbody>${items}</tbody>
-</table>
-</body>
-</html>`;
+</table>`
+  );
+}
+
+interface NearestOutage {
+  outage_id: string;
+  lat: number;
+  lng: number;
+  city: string;
+  zip: string;
+}
+
+interface TimelineRow {
+  status: string;
+  cause: string | null;
+  comment: string | null;
+  affected: number;
+  max_affected: number;
+  restore_estimate: string | null;
+  valid_from: string;
+  valid_to: string | null;
+}
+
+function renderSearchResults(lat: string, lng: string, nearest: NearestOutage | null, timeline: TimelineRow[]): string {
+  if (!nearest) {
+    return pageShell(
+      "No outages found",
+      `<h1>Find your outage</h1>
+${renderSearchForm(lat, lng)}
+<p class="muted">No outages have been recorded yet.</p>`
+    );
+  }
+
+  const rows = timeline
+    .map(
+      (r) =>
+        `<tr>
+          <td>${escapeHtml(r.status)}</td>
+          <td>${escapeHtml(r.cause ?? "")}</td>
+          <td>${r.affected}</td>
+          <td>${escapeHtml(r.valid_from)}</td>
+          <td>${r.valid_to ? escapeHtml(r.valid_to) : "ongoing"}</td>
+        </tr>`
+    )
+    .join("\n");
+
+  return pageShell(
+    "Your outage timeline",
+    `<h1>Find your outage</h1>
+${renderSearchForm(lat, lng)}
+<p>Nearest known location: <strong>${escapeHtml(nearest.city)}, ${escapeHtml(nearest.zip)}</strong>
+(${nearest.lat}, ${nearest.lng})</p>
+<table>
+<thead><tr><th>Status</th><th>Cause</th><th>Affected</th><th>From</th><th>To</th></tr></thead>
+<tbody>${rows}</tbody>
+</table>`
+  );
+}
+
+function html(body: string, status = 200): Response {
+  return new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
+}
+
+async function handleHome(env: Env): Promise<Response> {
+  const { results } = await env.DB.prepare(
+    `SELECT o.city AS city, COUNT(*) AS outage_count, SUM(os.affected) AS total_affected
+     FROM outage_states os
+     JOIN outages o ON o.outage_id = os.outage_id
+     WHERE os.valid_to IS NULL
+     GROUP BY o.city
+     ORDER BY o.city ASC`
+  ).all<CityTotal>();
+
+  return html(renderCityList(results));
+}
+
+async function handleSearch(env: Env, url: URL): Promise<Response> {
+  const latParam = url.searchParams.get("lat") ?? "";
+  const lngParam = url.searchParams.get("lng") ?? "";
+  const lat = Number(latParam);
+  const lng = Number(lngParam);
+
+  if (latParam === "" || lngParam === "" || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return html(
+      pageShell(
+        "Invalid search",
+        `<h1>Find your outage</h1>
+${renderSearchForm(latParam, lngParam)}
+<p class="error">Enter a valid latitude and longitude.</p>`
+      ),
+      400
+    );
+  }
+
+  // Nearest-neighbor by plain squared distance in degree space -- fine at the
+  // scale of a single utility's service territory, no need for haversine.
+  const nearest = await env.DB.prepare(
+    `SELECT outage_id, lat, lng, city, zip
+     FROM outages
+     ORDER BY (lat - ?) * (lat - ?) + (lng - ?) * (lng - ?) ASC
+     LIMIT 1`
+  )
+    .bind(lat, lat, lng, lng)
+    .first<NearestOutage>();
+
+  if (!nearest) {
+    return html(renderSearchResults(latParam, lngParam, null, []));
+  }
+
+  const { results: timeline } = await env.DB.prepare(
+    `SELECT os.status, os.cause, os.comment, os.affected, os.max_affected, os.restore_estimate,
+            os.valid_from, os.valid_to
+     FROM outage_states os
+     JOIN outages o ON o.outage_id = os.outage_id
+     WHERE o.lat = ? AND o.lng = ?
+     ORDER BY os.valid_from ASC`
+  )
+    .bind(nearest.lat, nearest.lng)
+    .all<TimelineRow>();
+
+  return html(renderSearchResults(latParam, lngParam, nearest, timeline));
 }
 
 export default {
   async fetch(request, env, ctx): Promise<Response> {
-    const { results } = await env.DB.prepare(
-      `SELECT o.city AS city, COUNT(*) AS outage_count, SUM(os.affected) AS total_affected
-       FROM outage_states os
-       JOIN outages o ON o.outage_id = os.outage_id
-       WHERE os.valid_to IS NULL
-       GROUP BY o.city
-       ORDER BY total_affected DESC`
-    ).all<CityTotal>();
-
-    return new Response(renderCityList(results), { headers: { "content-type": "text/html; charset=utf-8" } });
+    const url = new URL(request.url);
+    if (url.pathname === "/search") return handleSearch(env, url);
+    return handleHome(env);
   },
 
   async scheduled(event, env, ctx): Promise<void> {
