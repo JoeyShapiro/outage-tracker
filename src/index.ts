@@ -396,7 +396,7 @@ function renderTimelinePanel(
       )
       .join("\n");
 
-    const distanceLabel = distanceMiles !== null ? ` &mdash; ${distanceMiles.toFixed(1)} mi away` : "";
+    const distanceLabel = distanceMiles !== null ? ` (${distanceMiles.toFixed(1)} mi away)` : "";
 
     content = `<p class="match">Nearest known location: <strong>${escapeHtml(nearest.city)}, ${escapeHtml(nearest.zip)}</strong>${distanceLabel}</p>
 <div class="card-scroll">
