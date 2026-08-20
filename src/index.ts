@@ -268,7 +268,7 @@ const PAGE_STYLE = `
     letter-spacing: 0.05em;
     color: var(--muted);
   }
-  .card-scroll { overflow-y: auto; min-height: 0; }
+  .card-scroll { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
   form.search { display: flex; gap: 0.6rem; align-items: end; flex-wrap: wrap; margin-bottom: 1rem; }
   label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.75rem; color: var(--muted); }
   input {
@@ -423,13 +423,6 @@ function renderAffectedChart(points: AffectedSnapshot[]): string {
 </script>`;
 }
 
-function renderAffectedChartCard(points: AffectedSnapshot[]): string {
-  return `<section class="card">
-<h2>Total customers affected</h2>
-${renderAffectedChart(points)}
-</section>`;
-}
-
 // Covers every status the feed emits: a freshly reported outage starts
 // with an empty status before the utility assesses it.
 const STATUS_COLUMNS = [
@@ -438,6 +431,13 @@ const STATUS_COLUMNS = [
   { label: "Assigned", test: /assign/i },
   { label: "Onsite", test: /on-?site/i },
 ];
+
+function renderAffectedChartCard(points: AffectedSnapshot[]): string {
+  return `<section class="card">
+<h2>Total customers affected</h2>
+${renderAffectedChart(points)}
+</section>`;
+}
 
 function renderCityPanel(cityTotals: CityTotal[], cityStatusCounts: CityStatusCount[]): string {
   const totalOutages = cityTotals.reduce((sum, r) => sum + r.outage_count, 0);
@@ -556,11 +556,11 @@ async function handleHome(env: Env, url: URL): Promise<Response> {
   <p>Live status pulled from the utility feed</p>
 </header>
 <main class="layout">
-<div class="stack">
 ${renderTimelinePanel(latParam, lngParam, searchError, nearest, timeline)}
+<div class="stack">
+${renderCityPanel(cityTotals, cityStatusCounts)}
 ${renderAffectedChartCard(affectedSnapshots)}
 </div>
-${renderCityPanel(cityTotals, cityStatusCounts)}
 </main>`;
 
   return html(pageShell(body), searchError ? 400 : 200);
