@@ -270,6 +270,7 @@ const PAGE_STYLE = `
   }
   .card-scroll { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
   form.search { display: flex; gap: 0.6rem; align-items: end; flex-wrap: wrap; margin-bottom: 1rem; }
+  form.search label { flex: 1 1 320px; }
   label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.75rem; color: var(--muted); }
   input {
     padding: 0.45rem 0.6rem;
@@ -278,7 +279,7 @@ const PAGE_STYLE = `
     background: var(--bg);
     color: var(--text);
     font-size: 0.9rem;
-    width: 9rem;
+    width: 100%;
   }
   button {
     padding: 0.5rem 1rem;
@@ -321,27 +322,62 @@ ${body}
 </html>`;
 }
 
-function renderSearchForm(lat: string, lng: string): string {
-  return `<form class="search" method="GET" action="/">
-  <label>Latitude <input type="number" step="any" name="lat" value="${escapeHtml(lat)}" required></label>
-  <label>Longitude <input type="number" step="any" name="lng" value="${escapeHtml(lng)}" required></label>
-  <button type="submit">Find my outages</button>
-</form>`;
+function renderSearchForm(address: string): string {
+  return `<form class="search" id="address-form">
+  <label>Address <input type="text" name="address" id="address-input" value="${escapeHtml(address)}" placeholder="123 Main St, City, ST" required></label>
+  <button type="submit">Search</button>
+</form>
+<script>
+(function () {
+  const form = document.getElementById("address-form");
+  const input = document.getElementById("address-input");
+  const button = form.querySelector("button");
+
+  form.addEventListener("submit", async function (event) {
+    event.preventDefault();
+    const address = input.value.trim();
+    if (!address) return;
+
+    button.disabled = true;
+    button.textContent = "Searching…";
+
+    try {
+      const geoUrl = "https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" + encodeURIComponent(address);
+      const geoRes = await fetch(geoUrl, { headers: { Accept: "application/json" } });
+      if (!geoRes.ok) throw new Error("geocode failed");
+      const geoResults = await geoRes.json();
+      const first = geoResults[0];
+      if (!first) {
+        alert("Couldn't find that address. Try adding a city and state.");
+        return;
+      }
+
+      const params = new URLSearchParams({ address: address, lat: first.lat, lng: first.lon });
+      window.location.href = "/?" + params.toString();
+    } catch (err) {
+      alert("Something went wrong looking up that address. Please try again.");
+    } finally {
+      button.disabled = false;
+      button.textContent = "Search";
+    }
+  });
+})();
+</script>`;
 }
 
 function renderTimelinePanel(
-  latParam: string,
-  lngParam: string,
+  addressParam: string,
   searchError: boolean,
   nearest: NearestOutage | null,
+  distanceMiles: number | null,
   timeline: TimelineRow[]
 ): string {
   let content: string;
 
   if (searchError) {
-    content = `<p class="error">Enter a valid latitude and longitude.</p>`;
-  } else if (!latParam && !lngParam) {
-    content = `<p class="muted">Enter your coordinates to see your outage history.</p>`;
+    content = `<p class="error">Couldn't find that address. Try adding a city and state.</p>`;
+  } else if (!addressParam) {
+    content = `<p class="muted">Enter your address to see your outage history.</p>`;
   } else if (!nearest) {
     content = `<p class="muted">No outages have been recorded yet.</p>`;
   } else {
@@ -357,7 +393,9 @@ function renderTimelinePanel(
       )
       .join("\n");
 
-    content = `<p class="match">Nearest known location: <strong>${escapeHtml(nearest.city)}, ${escapeHtml(nearest.zip)}</strong> (${nearest.lat}, ${nearest.lng})</p>
+    const distanceLabel = distanceMiles !== null ? ` &mdash; ${distanceMiles.toFixed(1)} mi away` : "";
+
+    content = `<p class="match">Nearest known location: <strong>${escapeHtml(nearest.city)}, ${escapeHtml(nearest.zip)}</strong>${distanceLabel}</p>
 <div class="card-scroll">
 <table>
 <thead><tr><th>Status</th><th>Cause</th><th>Affected</th><th>From</th><th>To</th></tr></thead>
@@ -367,7 +405,7 @@ function renderTimelinePanel(
   }
 
   return `<section class="card">
-${renderSearchForm(latParam, lngParam)}
+${renderSearchForm(addressParam)}
 ${content}
 </section>`;
 }
@@ -490,7 +528,21 @@ function html(body: string, status = 200): Response {
   return new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
 }
 
+function haversineMiles(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const earthRadiusMiles = 3958.8;
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * earthRadiusMiles * Math.asin(Math.sqrt(a));
+}
+
 async function handleHome(env: Env, url: URL): Promise<Response> {
+  // The address the user typed is geocoded client-side (see renderSearchForm's
+  // script) and arrives here as lat/lng; `address` is only echoed back into the
+  // input so the box doesn't show raw coordinates after a search.
+  const addressParam = url.searchParams.get("address") ?? "";
   const latParam = url.searchParams.get("lat") ?? "";
   const lngParam = url.searchParams.get("lng") ?? "";
   const searched = latParam !== "" || lngParam !== "";
@@ -500,10 +552,11 @@ async function handleHome(env: Env, url: URL): Promise<Response> {
 
   let nearest: NearestOutage | null = null;
   let timeline: TimelineRow[] = [];
+  let distanceMiles: number | null = null;
 
   if (searched && !searchError) {
     // Nearest-neighbor by plain squared distance in degree space -- fine at the
-    // scale of a single utility's service territory, no need for haversine.
+    // scale of a single utility's service territory, no need for haversine here.
     nearest = await env.DB.prepare(
       `SELECT outage_id, lat, lng, city, zip
        FROM outages
@@ -514,6 +567,8 @@ async function handleHome(env: Env, url: URL): Promise<Response> {
       .first<NearestOutage>();
 
     if (nearest) {
+      distanceMiles = haversineMiles(lat, lng, nearest.lat, nearest.lng);
+
       const result = await env.DB.prepare(
         `SELECT os.status, os.cause, os.comment, os.affected, os.max_affected, os.restore_estimate,
                 os.valid_from, os.valid_to
@@ -556,7 +611,7 @@ async function handleHome(env: Env, url: URL): Promise<Response> {
   <p>Live status pulled from the utility feed</p>
 </header>
 <main class="layout">
-${renderTimelinePanel(latParam, lngParam, searchError, nearest, timeline)}
+${renderTimelinePanel(addressParam, searchError, nearest, distanceMiles, timeline)}
 <div class="stack">
 ${renderCityPanel(cityTotals, cityStatusCounts)}
 ${renderAffectedChartCard(affectedSnapshots)}
