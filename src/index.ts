@@ -229,9 +229,22 @@ const PAGE_STYLE = `
     color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   }
-  header { flex: none; padding: 1.25rem 1.5rem 0.5rem; }
+  header { flex: none; padding: 1.25rem 1.5rem 0.5rem; display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
   header h1 { margin: 0; font-size: 1.25rem; }
   header p { margin: 0.2rem 0 0; color: var(--muted); font-size: 0.85rem; }
+  .donate-wrap { flex: none; }
+  /* The bmc-button widget injects its own <style> with fixed px sizing;
+     these need higher specificity to win the cascade and shrink it ~30%. */
+  .donate-wrap .bmc-btn {
+    min-width: 147px !important;
+    height: 42px !important;
+    padding: 0 17px !important;
+    border-radius: 8px !important;
+    font-size: 20px !important;
+    line-height: 19px !important;
+  }
+  .donate-wrap .bmc-btn svg { height: 22px !important; }
+  .donate-wrap .bmc-btn-text { margin-left: 6px !important; }
   main.layout {
     flex: 1;
     min-height: 0;
@@ -648,8 +661,13 @@ async function handleHome(env: Env, url: URL): Promise<Response> {
   const affectedSnapshots = affectedSnapshotsDesc.slice().reverse();
 
   const body = `<header>
-  <h1>Outage tracker</h1>
-  <p>Live status pulled from the utility feed</p>
+  <div>
+    <h1>Outage tracker</h1>
+    <p>Live status pulled from the utility feed</p>
+  </div>
+  <div class="donate-wrap">
+    <script type="text/javascript" src="https://cdnjs.buymeacoffee.com/1.0.0/button.prod.min.js" data-name="bmc-button" data-slug="JoeyShapiro" data-color="#FFDD00" data-emoji=""  data-font="Cookie" data-text="Buy me a &lt;s&gt;Coffee&lt;/s&gt; Pastry" data-outline-color="#000000" data-font-color="#000000" data-coffee-color="#ffffff" ></script>
+  </div>
 </header>
 <main class="layout">
 ${renderTimelinePanel(addressParam, searchError, nearest, distanceMiles, timeline)}
