@@ -758,16 +758,39 @@ async function handleHome(env: Env, url: URL): Promise<Response> {
   if (searched && !searchError) {
     // Nearest-neighbor by plain squared distance in degree space -- fine at the
     // scale of a single utility's service territory, no need for haversine here.
-    const nearestTen = await env.DB.prepare(
+    // Pre-filter with a bounding box (backed by idx_outages_lat/lng) so this
+    // scans outages near the search point instead of every outage ever
+    // recorded -- outages is append-only and never pruned, so ordering the
+    // whole table by the distance expression alone gets more expensive with
+    // every week of history.
+    const BOX_DEGREES = 1; // ~69 miles of latitude; generous for one utility's territory
+    let nearestTen = await env.DB.prepare(
       `SELECT o.outage_id AS outage_id, o.lat AS lat, o.lng AS lng, o.city AS city, o.zip AS zip,
               COALESCE(os.status, '') AS status
        FROM outages o
        LEFT JOIN outage_states os ON os.outage_id = o.outage_id AND os.valid_to IS NULL
+       WHERE o.lat BETWEEN ? AND ? AND o.lng BETWEEN ? AND ?
        ORDER BY (o.lat - ?) * (o.lat - ?) + (o.lng - ?) * (o.lng - ?) ASC
        LIMIT 10`
     )
-      .bind(lat, lat, lng, lng)
+      .bind(lat - BOX_DEGREES, lat + BOX_DEGREES, lng - BOX_DEGREES, lng + BOX_DEGREES, lat, lat, lng, lng)
       .all<NearestOutage>();
+
+    if (nearestTen.results.length === 0) {
+      // Nothing within the box (e.g. a search well outside the service area) --
+      // fall back to the unbounded scan rather than reporting no outages at all.
+      nearestTen = await env.DB.prepare(
+        `SELECT o.outage_id AS outage_id, o.lat AS lat, o.lng AS lng, o.city AS city, o.zip AS zip,
+                COALESCE(os.status, '') AS status
+         FROM outages o
+         LEFT JOIN outage_states os ON os.outage_id = o.outage_id AND os.valid_to IS NULL
+         ORDER BY (o.lat - ?) * (o.lat - ?) + (o.lng - ?) * (o.lng - ?) ASC
+         LIMIT 10`
+      )
+        .bind(lat, lat, lng, lng)
+        .all<NearestOutage>();
+    }
+
     nearest = nearestTen.results[0] ?? null;
     nearby = nearestTen.results.slice(1);
 
