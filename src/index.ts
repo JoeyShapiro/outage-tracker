@@ -331,6 +331,9 @@ const PAGE_STYLE = `
   table { border-collapse: collapse; width: 100%; }
   th, td { text-align: left; padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--border); font-size: 0.85rem; }
   th { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); position: sticky; top: 0; background: var(--card-bg); }
+  th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+  th.sortable:hover { color: var(--text); }
+  .sort-arrow { font-size: 0.6rem; }
   .pill { display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px; font-size: 0.72rem; font-weight: 600; white-space: nowrap; }
   .ts { white-space: nowrap; }
   .pill-active { background: var(--pill-active-bg); color: var(--pill-active-text); }
@@ -683,17 +686,28 @@ function renderCityPanel(current: SnapshotRow[], baseline: SnapshotRow[]): strin
 
   const cities = Array.from(currentByCity.keys()).sort();
 
-  const header = `<th>City</th><th>Affected</th><th>Outages</th>${STATUS_COLUMNS.map(
-    (c) => `<th>${c.label}</th>`
-  ).join("")}`;
+  const columns: { label: string; type: "string" | "number" }[] = [
+    { label: "City", type: "string" },
+    { label: "Affected", type: "number" },
+    { label: "Outages", type: "number" },
+    ...STATUS_COLUMNS.map((c) => ({ label: c.label, type: "number" as const })),
+  ];
+  const header = columns
+    .map(
+      (c, i) =>
+        `<th class="sortable" data-col="${i}" data-type="${c.type}">${c.label}<span class="sort-arrow"></span></th>`
+    )
+    .join("");
   const bodyRows = cities
     .map((city) => {
       const agg = currentByCity.get(city)!;
       const prevAffected = baselineByCity.get(city)?.affected ?? 0;
-      const statusCells = agg.statusCounts.map((c) => `<td>${c || "–"}</td>`).join("");
-      return `<tr><td>${escapeHtml(city)}</td><td>${agg.affected.toLocaleString()}${renderDelta(
+      const statusCells = agg.statusCounts.map((c) => `<td data-sort-value="${c}">${c || "–"}</td>`).join("");
+      return `<tr><td data-sort-value="${escapeHtml(city)}">${escapeHtml(
+        city
+      )}</td><td data-sort-value="${agg.affected}">${agg.affected.toLocaleString()}${renderDelta(
         agg.affected - prevAffected
-      )}</td><td>${agg.outageCount}</td>${statusCells}</tr>`;
+      )}</td><td data-sort-value="${agg.outageCount}">${agg.outageCount}</td>${statusCells}</tr>`;
     })
     .join("\n");
 
@@ -701,11 +715,56 @@ function renderCityPanel(current: SnapshotRow[], baseline: SnapshotRow[]): strin
     cities.length === 0
       ? `<p class="muted">No active outages.</p>`
       : `<div class="card-scroll">
-<table>
+<table id="city-table">
 <thead><tr>${header}</tr></thead>
 <tbody>${bodyRows}</tbody>
 </table>
-</div>`;
+</div>
+<script>
+(function () {
+  const table = document.getElementById("city-table");
+  if (!table) return;
+  const tbody = table.tBodies[0];
+  const headers = table.querySelectorAll("th.sortable");
+  let currentCol = 0;
+  let currentDir = "asc";
+
+  function updateArrows() {
+    headers.forEach(function (th) {
+      const arrow = th.querySelector(".sort-arrow");
+      const col = Number(th.dataset.col);
+      arrow.textContent = col === currentCol ? (currentDir === "asc" ? " \\u25B2" : " \\u25BC") : "";
+    });
+  }
+
+  function sortBy(col, type, dir) {
+    const rows = Array.from(tbody.rows);
+    rows.sort(function (a, b) {
+      const av = a.cells[col].dataset.sortValue;
+      const bv = b.cells[col].dataset.sortValue;
+      const cmp = type === "number" ? Number(av) - Number(bv) : av.localeCompare(bv);
+      return dir === "asc" ? cmp : -cmp;
+    });
+    rows.forEach(function (row) { tbody.appendChild(row); });
+  }
+
+  headers.forEach(function (th) {
+    th.addEventListener("click", function () {
+      const col = Number(th.dataset.col);
+      if (col === currentCol) {
+        currentDir = currentDir === "asc" ? "desc" : "asc";
+      } else {
+        currentCol = col;
+        currentDir = "asc";
+      }
+      sortBy(currentCol, th.dataset.type, currentDir);
+      updateArrows();
+    });
+  });
+
+  updateArrows();
+})();
+</script>`;
 
   return `<section class="card">
 <h2>Outages by city</h2>
