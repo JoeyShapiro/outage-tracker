@@ -775,10 +775,14 @@ async function handleHome(env: Env, url: URL): Promise<Response> {
 
   const { results: currentSnapshot } = await env.DB.prepare(LIVE_CITY_STATUS_SQL).all<SnapshotRow>();
 
-  const hourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-  const baselineTs = await env.DB.prepare(`SELECT MAX(ts) AS ts FROM outage_snapshots WHERE ts <= ?`)
-    .bind(hourAgo)
-    .first<{ ts: string | null }>();
+  // Compare against the previous poll, not a fixed "1 hour ago" -- the cron
+  // is hourly in theory but its actual gaps drift (GitHub Actions scheduling
+  // jitter), and outage_states only changes once per poll anyway. A wall-clock
+  // cutoff can land on the same snapshot "current" already reflects, making
+  // every delta silently collapse to zero.
+  const baselineTs = await env.DB.prepare(
+    `SELECT MAX(ts) AS ts FROM outage_snapshots WHERE ts < (SELECT MAX(ts) FROM outage_snapshots)`
+  ).first<{ ts: string | null }>();
   const baselineSnapshot = baselineTs?.ts
     ? (
         await env.DB.prepare(`SELECT city, status, count, affected FROM outage_snapshots WHERE ts = ?`)
