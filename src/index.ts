@@ -219,7 +219,7 @@ const PAGE_STYLE = `
     }
   }
   * { box-sizing: border-box; }
-  html, body { height: 100%; }
+  html, body { height: 100%; overflow-x: hidden; }
   body {
     margin: 0;
     display: flex;
@@ -249,6 +249,7 @@ const PAGE_STYLE = `
   main.layout {
     flex: 1;
     min-height: 0;
+    min-width: 0;
     display: grid;
     grid-template-columns: minmax(320px, 1fr) minmax(360px, 1.2fr);
     gap: 1rem;
@@ -259,6 +260,7 @@ const PAGE_STYLE = `
     flex-direction: column;
     gap: 1rem;
     min-height: 0;
+    min-width: 0;
   }
   .stack .card:first-child { flex: 1 1 auto; }
   .stack .card:last-child { flex: 0 0 42%; }
@@ -266,6 +268,7 @@ const PAGE_STYLE = `
   .chart-wrap canvas { width: 100% !important; height: 100% !important; }
   .card {
     min-height: 0;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     background: var(--card-bg);
@@ -282,9 +285,9 @@ const PAGE_STYLE = `
     letter-spacing: 0.05em;
     color: var(--muted);
   }
-  .card-scroll { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
+  .card-scroll { flex: 1 1 auto; overflow-y: auto; overflow-x: auto; min-height: 0; }
   form.search { display: flex; gap: 0.6rem; align-items: end; flex-wrap: wrap; margin-bottom: 1rem; }
-  form.search label { flex: 1 1 320px; }
+  form.search label { flex: 1 1 320px; min-width: 0; }
   label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.75rem; color: var(--muted); }
   input {
     padding: 0.45rem 0.6rem;
@@ -294,6 +297,7 @@ const PAGE_STYLE = `
     color: var(--text);
     font-size: 0.9rem;
     width: 100%;
+    min-width: 0;
   }
   button {
     padding: 0.5rem 1rem;
@@ -325,6 +329,28 @@ const PAGE_STYLE = `
   .match strong { color: var(--text); }
   .map-wrap { flex: 0 0 50%; min-height: 0; margin-top: 0.75rem; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); }
   .map-wrap #outage-map { width: 100%; height: 100%; }
+
+  @media (max-width: 800px) {
+    body { height: auto; min-height: 100vh; overflow-x: hidden; overflow-y: visible; }
+    header { flex-wrap: wrap; padding: 1rem 1rem 0.5rem; }
+    main.layout {
+      grid-template-columns: 1fr;
+      padding: 0.75rem 1rem 1.5rem;
+    }
+    .card { min-height: auto; padding: 1rem; }
+    .stack .card:first-child,
+    .stack .card:last-child { flex: none; }
+    .card-scroll { flex: none; max-height: 320px; }
+    .chart-wrap { flex: none; min-height: 240px; }
+    .map-wrap { flex: none; height: 220px; }
+    form.search { flex-direction: column; align-items: stretch; }
+    form.search label { flex: 1 1 auto; }
+    form.search button { width: 100%; }
+    .stats { flex-wrap: wrap; }
+    .stat { flex: 1 1 45%; }
+    table { font-size: 0.8rem; }
+    th, td { padding: 0.4rem 0.5rem; }
+  }
 `;
 
 function pageShell(body: string): string {
@@ -332,6 +358,7 @@ function pageShell(body: string): string {
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Outage tracker</title>
 <style>${PAGE_STYLE}</style>
 </head>
