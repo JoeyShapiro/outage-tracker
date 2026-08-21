@@ -184,16 +184,17 @@ function escapeHtml(s: string): string {
 // out as a data-ts attribute and gets reformatted into the viewer's local
 // timezone client-side (see the inline scripts that consume it).
 function tsSpan(iso: string): string {
-  return `<span data-ts="${escapeHtml(iso)}">${escapeHtml(iso)}</span>`;
+  return `<span class="ts" data-ts="${escapeHtml(iso)}">${escapeHtml(iso)}</span>`;
 }
 
 const CLIENT_TS_FORMATTER = `
   function formatLocalTs(iso) {
     const d = new Date(iso);
     if (isNaN(d.getTime())) return iso;
-    return d.toLocaleString(undefined, {
-      year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
-    });
+    const now = new Date();
+    const opts = { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" };
+    if (d.getFullYear() !== now.getFullYear()) opts.year = "numeric";
+    return d.toLocaleString(undefined, opts);
   }`;
 
 function statusPillClass(status: string): string {
@@ -327,7 +328,8 @@ const PAGE_STYLE = `
   table { border-collapse: collapse; width: 100%; }
   th, td { text-align: left; padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--border); font-size: 0.85rem; }
   th { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); position: sticky; top: 0; background: var(--card-bg); }
-  .pill { display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px; font-size: 0.72rem; font-weight: 600; }
+  .pill { display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px; font-size: 0.72rem; font-weight: 600; white-space: nowrap; }
+  .ts { white-space: nowrap; }
   .pill-active { background: var(--pill-active-bg); color: var(--pill-active-text); }
   .pill-resolved { background: var(--pill-resolved-bg); color: var(--pill-resolved-text); }
   .stats { display: flex; gap: 0.6rem; margin-bottom: 0.85rem; }
