@@ -346,6 +346,9 @@ const PAGE_STYLE = `
   .muted { color: var(--muted); font-size: 0.85rem; }
   .match { font-size: 0.85rem; margin: 0 0 0.85rem; color: var(--muted); }
   .match strong { color: var(--text); }
+  .power-status { font-size: 0.9rem; font-weight: 600; margin: 0 0 0.85rem; padding: 0.5rem 0.75rem; border-radius: 8px; }
+  .power-on { background: var(--pill-resolved-bg); color: var(--pill-resolved-text); }
+  .power-off { background: var(--pill-active-bg); color: var(--pill-active-text); }
   .map-wrap { flex: 0 0 50%; min-height: 0; margin-top: 0.75rem; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); }
   .map-wrap #outage-map { width: 100%; height: 100%; }
 
@@ -500,6 +503,12 @@ function renderMap(
 </script>`;
 }
 
+function renderPowerBanner(hasPower: boolean): string {
+  return hasPower
+    ? `<p class="power-status power-on">⚡ No open outage found near this address — power is likely on.</p>`
+    : `<p class="power-status power-off">⚠ An outage is currently open near this address.</p>`;
+}
+
 function renderTimelinePanel(
   addressParam: string,
   searchError: boolean,
@@ -508,7 +517,8 @@ function renderTimelinePanel(
   nearest: NearestOutage | null,
   nearby: NearestOutage[],
   distanceMiles: number | null,
-  timeline: TimelineRow[]
+  timeline: TimelineRow[],
+  hasPower: boolean | null
 ): string {
   let content: string;
 
@@ -517,7 +527,7 @@ function renderTimelinePanel(
   } else if (!addressParam) {
     content = `<p class="muted">Enter your address to see your outage history.</p>`;
   } else if (!nearest) {
-    content = `<p class="muted">No outages have been recorded yet.</p>`;
+    content = `${renderPowerBanner(true)}<p class="muted">No outages have been recorded yet.</p>`;
   } else {
     const rows = timeline
       .map(
@@ -533,7 +543,8 @@ function renderTimelinePanel(
 
     const distanceLabel = distanceMiles !== null ? ` (${distanceMiles.toFixed(1)} mi away)` : "";
 
-    content = `<p class="match">Nearest known location: <strong style="color: ${NEAREST_MARKER_COLOR}">${escapeHtml(nearest.city)}, ${escapeHtml(nearest.zip)}</strong>${distanceLabel}</p>
+    content = `${renderPowerBanner(hasPower ?? true)}
+<p class="match">Nearest known location: <strong style="color: ${NEAREST_MARKER_COLOR}">${escapeHtml(nearest.city)}, ${escapeHtml(nearest.zip)}</strong>${distanceLabel}</p>
 <div class="card-scroll">
 <table>
 <thead><tr><th>Status</th><th>Cause</th><th>Affected</th><th>From</th><th>To</th></tr></thead>
@@ -728,6 +739,12 @@ function html(body: string, status = 200): Response {
   });
 }
 
+// Nominatim's address geocode and NIPSCO's own meter coordinates for "the
+// same" house are independent estimates and rarely land on identical
+// lat/lng -- this is how far apart they're allowed to be before an open
+// outage still counts as "at this address" for the has-power inference.
+const POWER_RADIUS_MILES = 0.3;
+
 function haversineMiles(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const earthRadiusMiles = 3958.8;
   const toRad = (deg: number) => (deg * Math.PI) / 180;
@@ -754,6 +771,9 @@ async function handleHome(env: Env, url: URL): Promise<Response> {
   let nearby: NearestOutage[] = [];
   let timeline: TimelineRow[] = [];
   let distanceMiles: number | null = null;
+  // null until a search resolves; true/false once we know whether an open
+  // outage sits within POWER_RADIUS_MILES of the searched address.
+  let hasPower: boolean | null = null;
 
   if (searched && !searchError) {
     // Nearest-neighbor by plain squared distance in degree space -- fine at the
@@ -793,6 +813,15 @@ async function handleHome(env: Env, url: URL): Promise<Response> {
 
     nearest = nearestTen.results[0] ?? null;
     nearby = nearestTen.results.slice(1);
+
+    // `nearest` is closest by raw distance across all outages ever recorded,
+    // open or long since restored, so it's not a reliable power signal on its
+    // own (a resolved outage right at this address could still be "closest").
+    // A restored outage drops its open outage_states row (see syncOutages),
+    // so scanning by distance for the first entry that still has one tells us
+    // whether an outage is actually ongoing near this address today.
+    const nearestOpen = nearestTen.results.find((o) => o.status !== "") ?? null;
+    hasPower = nearestOpen === null || haversineMiles(lat, lng, nearestOpen.lat, nearestOpen.lng) > POWER_RADIUS_MILES;
 
     if (nearest) {
       distanceMiles = haversineMiles(lat, lng, nearest.lat, nearest.lng);
@@ -852,7 +881,7 @@ async function handleHome(env: Env, url: URL): Promise<Response> {
   </div>
 </header>
 <main class="layout">
-${renderTimelinePanel(addressParam, searchError, lat, lng, nearest, nearby, distanceMiles, timeline)}
+${renderTimelinePanel(addressParam, searchError, lat, lng, nearest, nearby, distanceMiles, timeline, hasPower)}
 <div class="stack">
 ${renderCityPanel(currentSnapshot, baselineSnapshot)}
 ${renderAffectedChartCard(affectedSnapshots)}
