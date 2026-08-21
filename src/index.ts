@@ -179,9 +179,22 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 }
 
-function formatTs(iso: string): string {
-  return iso.replace("T", " ").replace(/\.\d+Z?$/, "").replace(/Z$/, "");
+// Timestamps are stored/emitted as UTC ISO strings; rendering them as plain
+// text would show UTC regardless of who's looking, so instead each one goes
+// out as a data-ts attribute and gets reformatted into the viewer's local
+// timezone client-side (see the inline scripts that consume it).
+function tsSpan(iso: string): string {
+  return `<span data-ts="${escapeHtml(iso)}">${escapeHtml(iso)}</span>`;
 }
+
+const CLIENT_TS_FORMATTER = `
+  function formatLocalTs(iso) {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return d.toLocaleString(undefined, {
+      year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+    });
+  }`;
 
 function statusPillClass(status: string): string {
   return /restor/i.test(status) ? "pill pill-resolved" : "pill pill-active";
@@ -231,9 +244,10 @@ const PAGE_STYLE = `
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   }
   header { flex: none; padding: 1.25rem 1.5rem 0.5rem; display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+  header .title { min-width: 0; flex: 1 1 auto; }
   header h1 { margin: 0; font-size: 1.25rem; }
-  header p { margin: 0.2rem 0 0; color: var(--muted); font-size: 0.85rem; }
-  .donate-wrap { flex: none; }
+  header p { margin: 0.2rem 0 0; color: var(--muted); font-size: 0.85rem; overflow-wrap: break-word; }
+  .donate-wrap { flex: none; margin-left: auto; }
   /* The bmc-button widget injects its own <style> with fixed px sizing;
      these need higher specificity to win the cascade and shrink it ~30%. */
   .donate-wrap .bmc-btn {
@@ -332,7 +346,7 @@ const PAGE_STYLE = `
 
   @media (max-width: 800px) {
     body { height: auto; min-height: 100vh; overflow-x: hidden; overflow-y: visible; }
-    header { flex-wrap: wrap; padding: 1rem 1rem 0.5rem; }
+    header { padding: 1rem 1rem 0.5rem; }
     main.layout {
       grid-template-columns: 1fr;
       padding: 0.75rem 1rem 1.5rem;
@@ -505,8 +519,8 @@ function renderTimelinePanel(
           <td><span class="${statusPillClass(r.status)}">${escapeHtml(r.status)}</span></td>
           <td>${escapeHtml(r.cause ?? "")}</td>
           <td>${r.affected}</td>
-          <td>${formatTs(r.valid_from)}</td>
-          <td>${r.valid_to ? formatTs(r.valid_to) : "ongoing"}</td>
+          <td>${tsSpan(r.valid_from)}</td>
+          <td>${r.valid_to ? tsSpan(r.valid_to) : "ongoing"}</td>
         </tr>`
       )
       .join("\n");
@@ -520,7 +534,14 @@ function renderTimelinePanel(
 <tbody>${rows}</tbody>
 </table>
 </div>
-${renderMap(lat, lng, nearest.lat, nearest.lng, nearest.status, nearby)}`;
+${renderMap(lat, lng, nearest.lat, nearest.lng, nearest.status, nearby)}
+<script>
+(function () {${CLIENT_TS_FORMATTER}
+  document.querySelectorAll("[data-ts]").forEach(function (el) {
+    el.textContent = formatLocalTs(el.getAttribute("data-ts"));
+  });
+})();
+</script>`;
   }
 
   return `<section class="card">
@@ -541,13 +562,14 @@ function renderAffectedChart(points: AffectedSnapshot[]): string {
     return `<div class="chart-wrap"><p class="muted">Not enough data yet.</p></div>`;
   }
 
-  const labels = points.map((p) => formatTs(p.ts));
+  const rawTimestamps = points.map((p) => p.ts);
   const totals = points.map((p) => p.total_affected);
 
   return `<div class="chart-wrap"><canvas id="affectedChart"></canvas></div>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <script>
-(function () {
+(function () {${CLIENT_TS_FORMATTER}
+  const labels = ${JSON.stringify(rawTimestamps)}.map(formatLocalTs);
   const styles = getComputedStyle(document.documentElement);
   const textColor = styles.getPropertyValue("--muted").trim() || "#6b7280";
   const gridColor = styles.getPropertyValue("--border").trim() || "#e5e7eb";
@@ -556,7 +578,7 @@ function renderAffectedChart(points: AffectedSnapshot[]): string {
   new Chart(document.getElementById("affectedChart"), {
     type: "line",
     data: {
-      labels: ${JSON.stringify(labels)},
+      labels: labels,
       datasets: [{
         label: "Customers affected",
         data: ${JSON.stringify(totals)},
@@ -769,7 +791,7 @@ async function handleHome(env: Env, url: URL): Promise<Response> {
   const affectedSnapshots = affectedSnapshotsDesc.slice().reverse();
 
   const body = `<header>
-  <div>
+  <div class="title">
     <h1>Outage tracker</h1>
     <p>Live status pulled from the utility feed</p>
   </div>
