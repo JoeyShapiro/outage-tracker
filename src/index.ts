@@ -248,6 +248,9 @@ const PAGE_STYLE = `
   header .title { min-width: 0; flex: 1 1 auto; }
   header h1 { margin: 0; font-size: 1.25rem; }
   header p { margin: 0.2rem 0 0; color: var(--muted); font-size: 0.85rem; overflow-wrap: break-word; }
+  footer { flex: none; padding: 0.5rem 1.5rem 1rem; text-align: center; }
+  footer p { margin: 0; color: var(--muted); font-size: 0.72rem; line-height: 1.5; }
+  footer a { color: var(--muted); }
   .donate-wrap { flex: none; margin-left: auto; }
   /* The bmc-button widget injects its own <style> with fixed px sizing;
      these need higher specificity to win the cascade and shrink it ~30%. */
@@ -349,6 +352,7 @@ const PAGE_STYLE = `
   @media (max-width: 800px) {
     body { height: auto; min-height: 100vh; overflow-x: hidden; overflow-y: visible; }
     header { padding: 1rem 1rem 0.5rem; }
+    footer { padding: 0.5rem 1rem 1rem; }
     main.layout {
       grid-template-columns: 1fr;
       padding: 0.75rem 1rem 1.5rem;
@@ -819,7 +823,13 @@ ${renderTimelinePanel(addressParam, searchError, lat, lng, nearest, nearby, dist
 ${renderCityPanel(currentSnapshot, baselineSnapshot)}
 ${renderAffectedChartCard(affectedSnapshots)}
 </div>
-</main>`;
+</main>
+<footer>
+  <p>Data source: <a href="https://www.nipsco.com/outage/power-outages" target="_blank" rel="noopener">NIPSCO.com/outage/power-outages</a>.
+  This is an unofficial site, not affiliated with NIPSCO, built in good faith to help people during outages; it polls the public feed hourly.
+  The NIPSCO outage map can be slow to load on a bad connection (exactly the situation you're in without power) so this collates the same data plus its history in one place.
+  Donations support this project and my other independent work.</p>
+</footer>`;
 
   return html(pageShell(body), searchError ? 400 : 200);
 }
