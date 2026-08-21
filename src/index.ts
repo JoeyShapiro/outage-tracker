@@ -713,8 +713,19 @@ ${table}
 </section>`;
 }
 
+// Data only changes once per hourly ingest cycle, so the rendered page is
+// safe to serve stale for a few minutes -- this lets the Cache API absorb
+// repeat visits without re-running any D1 queries.
+const HOME_CACHE_MAX_AGE_SECONDS = 300;
+
 function html(body: string, status = 200): Response {
-  return new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
+  return new Response(body, {
+    status,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": `public, max-age=${HOME_CACHE_MAX_AGE_SECONDS}`,
+    },
+  });
 }
 
 function haversineMiles(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -858,6 +869,19 @@ export default {
     if (url.pathname === "/ingest" && request.method === "POST") {
       return handleIngest(request, env);
     }
-    return handleHome(env, url);
+
+    if (request.method !== "GET") {
+      return handleHome(env, url);
+    }
+
+    // Cache key includes the query string, so a given address search and the
+    // default view are cached separately but each still skips D1 on repeat hits.
+    const cache = caches.default;
+    const cached = await cache.match(request);
+    if (cached) return cached;
+
+    const response = await handleHome(env, url);
+    ctx.waitUntil(cache.put(request, response.clone()));
+    return response;
   },
 } satisfies ExportedHandler<Env>;
