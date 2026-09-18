@@ -981,6 +981,13 @@ export default {
       return handleIngest(request, env);
     }
 
+    // Scanners constantly probe random paths (phpinfo.php, .env, etc.) --
+    // reject anything but the home route before it can reach D1, so that
+    // traffic can't turn into a stream of full-page renders and DB queries.
+    if (url.pathname !== "/") {
+      return new Response("Not found", { status: 404 });
+    }
+
     if (request.method !== "GET") {
       return handleHome(env, url);
     }
